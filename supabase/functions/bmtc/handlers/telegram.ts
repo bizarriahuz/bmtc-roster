@@ -1,6 +1,5 @@
-// Telegram webhook. Links chats to instructors (personal invites or the team join link),
-// hands out login links, answers /today etc.
-import { admin, getSecret, getSetting, json, tg, sendTelegram, notifyAdmins, sgDate, addDays, fmtDate, esc, APP_URL, randomCode, sha256 } from '../lib/common.js';
+// Telegram webhook (optional alerts channel). Links a chat via the code from app Settings, answers /today etc.
+import { admin, getSecret, json, sendTelegram, sgDate, addDays, fmtDate, esc, APP_URL, randomCode, sha256 } from '../lib/common.js';
 import { describe } from '../lib/parser.js';
 
 const HELP = [
@@ -31,54 +30,11 @@ async function scheduleText(db, instructorId, from, to, title) {
   return lines.join('\n');
 }
 
-// Link a Telegram chat to an instructor and send the welcome + app link
+// Link a Telegram chat to an instructor
 async function linkChat(db, chatId, from, inst) {
   await db.from('contacts').update({ telegram_chat_id: null }).eq('telegram_chat_id', chatId);
   await db.from('contacts').upsert({ instructor_id: inst.id, telegram_chat_id: chatId, telegram_username: from?.username || null, linked_at: new Date().toISOString() });
-  const link = await loginLink(db, inst.id);
-  await sendTelegram(chatId, `✅ Linked as <b>${esc(inst.name)}</b>. You'll get schedule changes here.\n\nSend /today or /week anytime. Tap below to open the app (link works once, for 15 min; send /login for a new one).`, {
-    reply_markup: { inline_keyboard: [[{ text: 'Open BMTC Roster', url: link }]] },
-  });
-}
-
-// Names still free to claim with the team link
-async function unclaimed(db) {
-  const { data: people } = await db.from('instructors').select('id,name').eq('active', true).order('name');
-  const { data: linked } = await db.from('contacts').select('instructor_id').not('telegram_chat_id', 'is', null);
-  const taken = new Set((linked || []).map((c) => c.instructor_id));
-  return (people || []).filter((p) => !taken.has(p.id));
-}
-
-async function showNamePicker(db, chatId, code) {
-  const free = await unclaimed(db);
-  if (!free.length) { await sendTelegram(chatId, 'Everyone on the roster is already linked. If your name is missing, ask an admin to add you.'); return; }
-  const rows = [];
-  for (let i = 0; i < free.length; i += 3) rows.push(free.slice(i, i + 3).map((p) => ({ text: p.name, callback_data: `c:${p.id}:${code}` })));
-  await sendTelegram(chatId, '👋 Welcome to <b>BMTC Roster</b>.\n\nTap <b>your own name</b> below. You can only pick once, and admins are told who joined as whom.\n\nName not here? Ask an admin to add you.', {
-    reply_markup: { inline_keyboard: rows },
-  });
-}
-
-async function handleCallback(db, cq) {
-  const chatId = cq.message?.chat?.id;
-  const m = String(cq.data || '').match(/^c:([0-9a-f-]{36}):([A-Za-z0-9_-]+)$/);
-  const answer = (text) => tg('answerCallbackQuery', { callback_query_id: cq.id, text, show_alert: true });
-  if (!m || !chatId || cq.message?.chat?.type !== 'private') { await answer('Something went wrong. Try the join link again.'); return; }
-  const [, instId, code] = m;
-  const teamCode = await getSetting(db, 'team_code');
-  if (!teamCode || teamCode !== code) { await answer('This join link has been turned off. Ask an admin for the current one.'); return; }
-  const { data: already } = await db.from('contacts').select('instructor_id').eq('telegram_chat_id', chatId).maybeSingle();
-  if (already) { await answer('This Telegram account is already linked. Send /login to open the app.'); return; }
-  const { data: inst } = await db.from('instructors').select('id,name,active').eq('id', instId).maybeSingle();
-  if (!inst?.active) { await answer('That name is no longer on the roster.'); return; }
-  const { data: taken } = await db.from('contacts').select('telegram_chat_id').eq('instructor_id', instId).maybeSingle();
-  if (taken?.telegram_chat_id) { await answer(`${inst.name} has already been claimed. If that's you, tell an admin.`); return; }
-
-  await tg('answerCallbackQuery', { callback_query_id: cq.id, text: `Linked as ${inst.name}` });
-  await tg('editMessageText', { chat_id: chatId, message_id: cq.message.message_id, text: `You picked <b>${esc(inst.name)}</b>.`, parse_mode: 'HTML' });
-  await linkChat(db, chatId, cq.from, inst);
-  const who = [cq.from?.first_name, cq.from?.last_name].filter(Boolean).join(' ');
-  await notifyAdmins(db, `👤 <b>${esc(inst.name)}</b> joined via the team link (Telegram: ${esc(who)}${cq.from?.username ? ' @' + esc(cq.from.username) : ''}).\nWrong person? Admin → People → Remove access.`, null);
+  await sendTelegram(chatId, `✅ Telegram alerts are on for <b>${esc(inst.name)}</b>. Schedule changes will come here.\n\nYou can also send /today, /tomorrow or /week anytime.`);
 }
 
 export default async function handler(req: Request): Promise<Response> {
@@ -86,8 +42,6 @@ export default async function handler(req: Request): Promise<Response> {
   const secret = await getSecret(db, 'TELEGRAM_WEBHOOK_SECRET');
   if (!secret || req.headers.get('x-telegram-bot-api-secret-token') !== secret) return json({ error: 'forbidden' }, 403);
   const update = await req.json().catch(() => ({}));
-
-  if (update.callback_query) { await handleCallback(db, update.callback_query); return json({ ok: true }); }
 
   const msg = update.message;
   if (!msg?.text || msg.chat?.type !== 'private') return json({ ok: true });
@@ -97,12 +51,12 @@ export default async function handler(req: Request): Promise<Response> {
   const { data: contact } = await db.from('contacts').select('*, instructors(id,name,active)').eq('telegram_chat_id', chatId).maybeSingle();
   const isLinked = contact && contact.instructors?.active;
 
-  // personal invite: from /start payload, or a pasted link/code
+  // personal link code: from /start payload, or a pasted link/code
   const inv = text.match(/inv_([A-Za-z0-9_-]{8,})/);
   if (inv) {
     const { data: code } = await db.from('invite_codes').select('*, instructors!invite_codes_instructor_id_fkey(id,name,active)').eq('code', inv[1]).maybeSingle();
     if (!code || code.used_at || !code.instructors?.active) {
-      await sendTelegram(chatId, 'That invite link is invalid or already used. Ask an admin for a new one.');
+      await sendTelegram(chatId, 'That link has expired. In the app, go to Settings → Get alerts on Telegram to get a new one.');
       return json({ ok: true });
     }
     await db.from('invite_codes').update({ used_at: new Date().toISOString() }).eq('code', inv[1]);
@@ -110,18 +64,8 @@ export default async function handler(req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
-  // team join link
-  const team = text.match(/team_([A-Za-z0-9_-]{6,})/);
-  if (team) {
-    if (isLinked) { await sendTelegram(chatId, `You're already linked as <b>${esc(contact.instructors.name)}</b>. Send /login to open the app.`); return json({ ok: true }); }
-    const teamCode = await getSetting(db, 'team_code');
-    if (!teamCode || teamCode !== team[1]) { await sendTelegram(chatId, 'This join link has been turned off. Ask an admin for the current one.'); return json({ ok: true }); }
-    await showNamePicker(db, chatId, teamCode);
-    return json({ ok: true });
-  }
-
   if (!isLinked) {
-    await sendTelegram(chatId, 'This Telegram account isn\'t linked to the roster yet. Use the team join link from your group chat, or paste the invite link an admin sent you here.');
+    await sendTelegram(chatId, 'This Telegram account isn\'t linked yet. Open the BMTC Roster app → Settings → <b>Get alerts on Telegram</b>.');
     return json({ ok: true });
   }
   const me = contact.instructors;

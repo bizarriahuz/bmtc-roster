@@ -46,7 +46,21 @@ const icon = {
 const MARK = '<svg class="mark" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#3d5a2e"/><path d="M14 22h36M14 32h36M14 42h24" stroke="#e3ead9" stroke-width="5" stroke-linecap="round"/><circle cx="46" cy="42" r="5" fill="#f0a16a"/></svg>';
 
 // ---------- auth ----------
+async function startSession(token_hash) {
+  await sb.auth.signOut().catch(() => {});
+  const { error } = await sb.auth.verifyOtp({ token_hash, type: 'magiclink' });
+  if (error) throw error;
+  history.replaceState(null, '', location.pathname + '#me');
+  location.reload();
+}
+
 async function boot() {
+  const j = location.hash.match(/join=([A-Za-z0-9_-]+)/);
+  if (j) {
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) return renderJoin(j[1]);
+    history.replaceState(null, '', location.pathname + '#me');
+  }
   const m = location.hash.match(/login=([A-Za-z0-9_-]+)/);
   if (m) {
     $app.innerHTML = '<div class="spin"></div>';
@@ -73,17 +87,62 @@ async function boot() {
 }
 
 async function renderLogin(err) {
-  try { S.config = await api('public-config'); } catch { S.config = {}; }
-  const bot = S.config.bot_username;
   $app.innerHTML = `<div class="login">
     ${MARK}
     <h1>BMTC Roster</h1>
     <p class="muted">PT deployment schedule for BMTC instructors.</p>
     ${err ? `<div class="banner">${esc(err)}</div>` : ''}
-    ${bot ? `<a class="btn primary block" style="display:block;text-decoration:none;margin-top:18px" href="https://t.me/${esc(bot)}?start=login">Sign in with Telegram</a>
-      <p class="small muted" style="margin-top:14px">The bot sends you a one-time sign-in link. First time? Use the invite link an admin sent you.</p>`
-    : '<p class="small muted">Sign-in is not set up yet.</p>'}
+    <form id="lf" style="text-align:left;margin-top:18px">
+      <label class="small muted">Your name (as on the roster)</label>
+      <input type="text" id="ln" autocomplete="username" autocapitalize="words" required>
+      <label class="small muted" style="display:block;margin-top:10px">PIN</label>
+      <input type="password" id="lp" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="current-password" required>
+      <button class="btn primary block" style="margin-top:14px">Sign in</button>
+    </form>
+    <p class="small muted" style="margin-top:14px">First time? Open the join link posted in your team group.<br>Forgot your PIN? Ask an admin to reset it.</p>
   </div>`;
+  document.getElementById('lf').onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = e.target.querySelector('button'); btn.disabled = true;
+    try {
+      const { token_hash } = await api('pin-login', { name: document.getElementById('ln').value, pin: document.getElementById('lp').value });
+      await startSession(token_hash);
+    } catch (err2) { toast(err2.message); btn.disabled = false; }
+  };
+}
+
+async function renderJoin(code) {
+  $app.innerHTML = '<div class="spin"></div>';
+  let names;
+  try { ({ names } = await api('join-names', { code })); }
+  catch (e) { history.replaceState(null, '', location.pathname); return renderLogin(e.message); }
+  $app.innerHTML = `<div class="login">
+    ${MARK}
+    <h1>Join BMTC Roster</h1>
+    <p class="muted">See your PT deployment schedule and get alerts when it changes.</p>
+    <form id="jf" style="text-align:left;margin-top:18px">
+      <label class="small muted">1. Pick your name</label>
+      <select id="jn" required><option value="">Choose…</option>${names.map((n) => `<option value="${n.id}">${esc(n.name)}</option>`).join('')}</select>
+      <label class="small muted" style="display:block;margin-top:10px">2. Choose a 4–6 digit PIN</label>
+      <input type="password" id="jp" inputmode="numeric" pattern="[0-9]{4,6}" maxlength="6" autocomplete="new-password" required>
+      <label class="small muted" style="display:block;margin-top:10px">Type the PIN again</label>
+      <input type="password" id="jp2" inputmode="numeric" pattern="[0-9]{4,6}" maxlength="6" autocomplete="new-password" required>
+      <button class="btn primary block" style="margin-top:14px">Join</button>
+    </form>
+    <p class="small muted" style="margin-top:14px">Name not in the list? It's either already taken or not on the roster yet. Ask an admin.<br>Already joined? <a href="#" id="tologin">Sign in</a></p>
+  </div>`;
+  document.getElementById('tologin').onclick = (e) => { e.preventDefault(); history.replaceState(null, '', location.pathname); renderLogin(); };
+  document.getElementById('jf').onsubmit = async (e) => {
+    e.preventDefault();
+    const pin = document.getElementById('jp').value, pin2 = document.getElementById('jp2').value;
+    if (!/^[0-9]{4,6}$/.test(pin)) return toast('PIN must be 4 to 6 digits');
+    if (pin !== pin2) return toast("The two PINs don't match");
+    const btn = e.target.querySelector('button'); btn.disabled = true;
+    try {
+      const { token_hash } = await api('join', { code, instructor_id: document.getElementById('jn').value, pin });
+      await startSession(token_hash);
+    } catch (err) { toast(err.message); btn.disabled = false; }
+  };
 }
 
 async function loadBase() {
@@ -245,11 +304,12 @@ async function viewSettings() {
 
   document.getElementById('view').innerHTML = `<h1>Settings</h1>
     <div class="card">
-      <div class="row between"><div><b>Telegram</b><div class="small muted">${c?.telegram_chat_id ? `Linked${c.telegram_username ? ' as @' + esc(c.telegram_username) : ''}` : 'Not linked. Ask an admin for your invite link.'}</div></div>
-      ${c?.telegram_chat_id ? '<span class="chip ok">On</span>' : '<span class="chip bad">Off</span>'}</div>
+      <div class="row between"><div><b>Telegram alerts</b><div class="small muted">${c?.telegram_chat_id ? `Linked${c.telegram_username ? ' as @' + esc(c.telegram_username) : ''}` : 'Optional. The most reliable way to get last-minute changes.'}</div></div>
+      ${c?.telegram_chat_id ? '<span class="chip ok">On</span>' : ''}</div>
+      ${c?.telegram_chat_id ? '' : '<button class="btn primary" id="tg-on" style="margin-top:10px">Get alerts on Telegram</button><p class="small muted" id="tg-hint" style="display:none">Telegram opens: press <b>Start</b>. Then come back here.</p>'}
     </div>
     <div class="card">
-      <div class="row between"><div><b>Phone notifications</b><div class="small muted">Backup to Telegram, shown by this browser/app.</div></div>
+      <div class="row between"><div><b>Phone notifications</b><div class="small muted">Shown by this app on your phone.</div></div>
       ${pushOn ? '<span class="chip ok">On</span>' : ''}</div>
       ${!pushSupported ? `<p class="small muted">${isIOS && !standalone ? 'On iPhone: tap Share → <b>Add to Home Screen</b>, open the app from there, then come back here.' : 'This browser does not support notifications.'}</p>`
         : pushOn ? '' : `<button class="btn primary" id="push-on" style="margin-top:10px">Turn on notifications</button>`}
@@ -270,6 +330,11 @@ async function viewSettings() {
     toast(error ? error.message : 'Saved');
   });
   document.getElementById('push-on')?.addEventListener('click', enablePush);
+  document.getElementById('tg-on')?.addEventListener('click', async (e) => {
+    const w = window.open('', '_blank');
+    try { const { link } = await api('telegram-link'); if (w) w.location = link; else location.href = link; document.getElementById('tg-hint').style.display = 'block'; }
+    catch (err) { w?.close(); toast(err.message); }
+  });
   document.getElementById('test').onclick = async () => { try { const r = await api('test-notify'); toast(r.ok ? 'Test alert sent' : 'No channel is set up yet'); } catch (e) { toast(e.message); } };
   document.getElementById('out').onclick = async () => { await sb.auth.signOut(); location.hash = ''; location.reload(); };
   document.getElementById('theme').onchange = (e) => { const v = e.target.value; try { localStorage.setItem('theme', v); } catch {} applyTheme(); };
@@ -307,13 +372,17 @@ async function viewAdmin() {
 
 async function admPeople() {
   await loadBase();
-  const { data: contacts } = await sb.from('contacts').select('instructor_id,telegram_chat_id,telegram_username');
+  const [{ data: contacts }, { data: joinedRows }] = await Promise.all([
+    sb.from('contacts').select('instructor_id,telegram_chat_id,telegram_username'),
+    sb.from('joined').select('instructor_id'),
+  ]);
   const linked = new Map((contacts || []).map((c) => [c.instructor_id, c]));
+  const joined = new Set((joinedRows || []).map((r) => r.instructor_id));
   const el = document.getElementById('adm');
   const linkedCount = S.people.filter((p) => linked.get(p.id)?.telegram_chat_id).length;
   el.innerHTML = `<div class="card" id="team"><div class="spin" style="margin:6px auto"></div></div>
     <div class="row" style="gap:8px;margin-bottom:10px"><input type="search" id="q" placeholder="Search name"><button class="btn primary" id="add">Add</button></div>
-    <p class="small muted">${S.people.filter((p) => p.active).length} active · ${linkedCount} linked to Telegram</p>
+    <p class="small muted">${S.people.filter((p) => p.active).length} on roster · ${S.people.filter((p) => joined.has(p.id)).length} joined · ${linkedCount} on Telegram</p>
     <div class="card list" id="plist"></div>`;
   const draw = (q = '') => {
     document.getElementById('plist').innerHTML = S.people.filter((p) => p.name.toLowerCase().includes(q.toLowerCase())).map((p) => {
@@ -321,36 +390,25 @@ async function admPeople() {
       return `<div>
         <div class="row between"><div><b>${esc(p.name)}</b> ${p.is_admin ? '<span class="chip ok">admin</span>' : ''} ${!p.active ? '<span class="chip bad">inactive</span>' : ''}
           <div class="small muted">${esc(p.school || 'No school')}${p.aliases?.length ? ' · also: ' + p.aliases.map(esc).join(', ') : ''}</div></div>
-          ${c?.telegram_chat_id ? '<span class="chip ok">linked</span>' : '<span class="chip">not linked</span>'}</div>
+          <div class="row" style="gap:4px">${joined.has(p.id) ? '<span class="chip ok">joined</span>' : '<span class="chip">not joined</span>'}${c?.telegram_chat_id ? '<span class="chip">Telegram</span>' : ''}</div></div>
         <div class="row wrap" style="gap:6px;margin-top:8px">
-          <button class="btn sm primary" data-inv="${p.id}">${c?.telegram_chat_id ? 'New invite link' : 'Invite link'}</button>
           <button class="btn sm" data-edit="${p.id}">Edit</button>
-          ${p.user_id || c?.telegram_chat_id ? `<button class="btn sm danger" data-rev="${p.id}">Remove access</button>` : ''}
+          ${joined.has(p.id) && p.id !== S.me.id ? `<button class="btn sm" data-reset="${p.id}">Reset PIN</button>` : ''}
+          ${(p.user_id || c?.telegram_chat_id || joined.has(p.id)) && p.id !== S.me.id ? `<button class="btn sm danger" data-rev="${p.id}">Remove access</button>` : ''}
         </div></div>`;
     }).join('');
     bind();
   };
   const bind = () => {
-    document.querySelectorAll('[data-inv]').forEach((b) => b.onclick = async () => {
-      b.disabled = true;
-      try {
-        const r = await api('invite', { instructor_id: b.dataset.inv });
-        const dlg = document.createElement('dialog');
-        dlg.innerHTML = `<div class="in"><div class="big">Invite ${esc(r.name)}</div>
-          <p class="small muted">Send this link to ${esc(r.name)} privately (e.g. Telegram DM). It works once and links their Telegram to their name.</p>
-          <p><code class="k">${esc(r.link)}</code></p>
-          <div class="row" style="justify-content:flex-end;gap:6px"><button class="btn" id="cl">Close</button>${navigator.share ? '<button class="btn" id="sh">Share</button>' : ''}<button class="btn primary" id="cp">Copy</button></div></div>`;
-        document.body.appendChild(dlg); dlg.showModal();
-        dlg.querySelector('#cl').onclick = () => dlg.remove();
-        dlg.querySelector('#cp').onclick = async () => { try { await navigator.clipboard.writeText(r.link); toast('Copied'); } catch { toast('Copy failed, long-press the link'); } };
-        dlg.querySelector('#sh')?.addEventListener('click', () => navigator.share({ text: `BMTC Roster invite for ${r.name}: ${r.link}` }).catch(() => {}));
-      } catch (e) { toast(e.message); }
-      b.disabled = false;
+    document.querySelectorAll('[data-reset]').forEach((b) => b.onclick = async () => {
+      const p = S.byId.get(b.dataset.reset);
+      if (!confirm(`Reset ${p.name}'s PIN? They'll be signed out and can join again with the team link to set a new PIN.`)) return;
+      try { await api('reset-pin', { instructor_id: p.id }); toast('PIN reset'); admPeople(); } catch (e) { toast(e.message); }
     });
     document.querySelectorAll('[data-edit]').forEach((b) => b.onclick = () => editPerson(S.byId.get(b.dataset.edit)));
     document.querySelectorAll('[data-rev]').forEach((b) => b.onclick = async () => {
       const p = S.byId.get(b.dataset.rev);
-      if (!confirm(`Remove ${p.name}'s access now? They will be signed out and stop getting alerts. You can invite them again later.`)) return;
+      if (!confirm(`Remove ${p.name}'s access now? They'll be signed out, their PIN cleared and Telegram alerts stopped. They can join again with the team link.`)) return;
       try { await api('revoke', { instructor_id: p.id }); toast('Access removed'); admPeople(); } catch (e) { toast(e.message); }
     });
   };
@@ -366,7 +424,7 @@ async function drawTeam(action) {
   try { r = action ? await api('team-link', action) : await api('team-link-status'); } catch (e) { box.innerHTML = `<b>Team join link</b><p class="small muted">${esc(e.message)}</p>`; return; }
   box.innerHTML = r.link ? `
     <div class="row between"><b>Team join link</b><span class="chip ok">on</span></div>
-    <p class="small muted">Post this in the team's Telegram group. Each person taps it, presses Start and picks their own name. You'll get a Telegram message for every join.</p>
+    <p class="small muted">Post this in the team's group chat. Each person opens it, picks their name and sets a PIN. Admins on Telegram get a message for every join.</p>
     <p><code class="k">${esc(r.link)}</code></p>
     <div class="row wrap" style="gap:6px">
       <button class="btn sm primary" id="t-copy">Copy</button>${navigator.share ? '<button class="btn sm" id="t-share">Share</button>' : ''}
@@ -375,10 +433,10 @@ async function drawTeam(action) {
   : `<div class="row between"><b>Team join link</b><span class="chip">off</span></div>
     <p class="small muted">One link for the whole team instead of inviting people one by one. Turn it off once everyone has joined.</p>
     <button class="btn sm primary" id="t-on">Create team link</button>`;
-  const msg = (l) => `Join BMTC Roster to get your PT deployment schedule and change alerts on Telegram. Tap, press Start, then pick your name: ${l}`;
+  const msg = (l) => `Join BMTC Roster to see your PT deployment schedule and get alerts when it changes. Open the link, pick your name and set a PIN: ${l}`;
   box.querySelector('#t-on')?.addEventListener('click', () => drawTeam({}));
   box.querySelector('#t-new')?.addEventListener('click', () => { if (confirm('Make a new link? The current one stops working.')) drawTeam({ rotate: true }); });
-  box.querySelector('#t-off')?.addEventListener('click', () => { if (confirm('Turn off the team link? People already linked are not affected.')) drawTeam({ off: true }); });
+  box.querySelector('#t-off')?.addEventListener('click', () => { if (confirm('Turn off the team link? People who already joined are not affected.')) drawTeam({ off: true }); });
   box.querySelector('#t-copy')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(msg(r.link)); toast('Copied with a short message'); } catch { toast('Copy failed, long-press the link'); } });
   box.querySelector('#t-share')?.addEventListener('click', () => navigator.share({ text: msg(r.link) }).catch(() => {}));
 }

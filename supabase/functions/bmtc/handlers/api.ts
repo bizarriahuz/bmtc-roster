@@ -1,14 +1,31 @@
-// App actions that need the service role: login exchange, push subscribe, swaps, admin tools.
-import { admin, getSecret, json, CORS, caller, sha256, randomCode, tg, notify, notifyAdmins, esc, fmtDate, getSetting, setSetting, sgDate, APP_URL } from '../lib/common.js';
+// App actions that need the service role: join/sign-in, push subscribe, Telegram connect, admin tools.
+import { admin, getSecret, json, CORS, caller, sha256, randomCode, tg, notify, notifyAdmins, esc, getSetting, setSetting, APP_URL } from '../lib/common.js';
 import { serviceAccountEmail } from '../lib/google.js';
 import { runSync } from '../lib/sync.js';
-import { describe } from '../lib/parser.js';
 
 const authEmail = (id: string) => `i-${id}@bmtc-roster.app`;
 
 async function botLink(db, payload: string) {
   const u = await getSetting(db, 'bot_username');
   return u ? `https://t.me/${u}?start=${payload}` : null;
+}
+
+// Create the auth user on first use and return a one-time token the app exchanges for a session
+async function issueSession(db, inst) {
+  const email = authEmail(inst.id);
+  if (!inst.user_id) {
+    const { data: created, error } = await db.auth.admin.createUser({ email, email_confirm: true, user_metadata: { instructor_id: inst.id, name: inst.name } });
+    if (error) throw error;
+    await db.from('instructors').update({ user_id: created.user.id }).eq('id', inst.id);
+  }
+  const { data: link, error: le } = await db.auth.admin.generateLink({ type: 'magiclink', email });
+  if (le) throw le;
+  return link.properties.hashed_token;
+}
+
+async function teamCodeOk(db, code) {
+  const t = await getSetting(db, 'team_code');
+  return !!t && !!code && t === code;
 }
 
 export default async function handler(req: Request): Promise<Response> {
@@ -28,21 +45,51 @@ export default async function handler(req: Request): Promise<Response> {
       const code = String(body.code || '');
       if (code.length < 20) return json({ error: 'invalid code' }, 400);
       const { data: lc } = await db.from('login_codes').select('*').eq('code_hash', await sha256(code)).maybeSingle();
-      if (!lc || lc.used_at || new Date(lc.expires_at) < new Date()) return json({ error: 'This sign-in link has expired. Send /login to the bot for a new one.' }, 400);
+      if (!lc || lc.used_at || new Date(lc.expires_at) < new Date()) return json({ error: 'This sign-in link has expired. Sign in with your name and PIN.' }, 400);
       await db.from('login_codes').update({ used_at: new Date().toISOString() }).eq('code_hash', lc.code_hash);
       const { data: inst } = await db.from('instructors').select('*').eq('id', lc.instructor_id).maybeSingle();
       if (!inst?.active) return json({ error: 'Your access has been removed.' }, 403);
-      const email = authEmail(inst.id);
-      if (!inst.user_id) {
-        const { data: created, error } = await db.auth.admin.createUser({ email, email_confirm: true, user_metadata: { instructor_id: inst.id, name: inst.name } });
-        if (error) throw error;
-        await db.from('instructors').update({ user_id: created.user.id }).eq('id', inst.id);
-      }
-      const { data: link, error: le } = await db.auth.admin.generateLink({ type: 'magiclink', email });
-      if (le) throw le;
-      // housekeeping
       await db.from('login_codes').delete().lt('expires_at', new Date(Date.now() - 86400000).toISOString());
-      return json({ token_hash: link.properties.hashed_token });
+      return json({ token_hash: await issueSession(db, inst) });
+    }
+
+    // ---- joining with the team link + PIN ----
+    if (action === 'join-names') {
+      if (!(await teamCodeOk(db, body.code))) return json({ error: 'This join link is no longer active. Ask an admin for the current one.' }, 403);
+      const { data: people } = await db.from('instructors').select('id,name').eq('active', true).order('name');
+      const { data: pins } = await db.from('pins').select('instructor_id');
+      const taken = new Set((pins || []).map((p) => p.instructor_id));
+      return json({ names: (people || []).filter((p) => !taken.has(p.id)) });
+    }
+
+    if (action === 'join') {
+      if (!(await teamCodeOk(db, body.code))) return json({ error: 'This join link is no longer active. Ask an admin for the current one.' }, 403);
+      const pin = String(body.pin || '');
+      if (!/^[0-9]{4,6}$/.test(pin)) return json({ error: 'PIN must be 4 to 6 digits' }, 400);
+      const { data: inst } = await db.from('instructors').select('*').eq('id', body.instructor_id).eq('active', true).maybeSingle();
+      if (!inst) return json({ error: 'That name is not on the roster' }, 400);
+      const { data: existing } = await db.from('pins').select('instructor_id').eq('instructor_id', inst.id).maybeSingle();
+      if (existing) return json({ error: `${inst.name} has already joined. If that's you, sign in with your PIN or ask an admin to reset it.` }, 409);
+      const { error: pe } = await db.rpc('set_pin', { p_instructor: inst.id, p_pin: pin });
+      if (pe) throw pe;
+      await notifyAdmins(db, `👤 <b>${esc(inst.name)}</b> joined BMTC Roster.\nWrong person? Admin → People → Reset PIN.`, null);
+      return json({ token_hash: await issueSession(db, inst), name: inst.name });
+    }
+
+    if (action === 'pin-login') {
+      const name = String(body.name || '').trim().toLowerCase();
+      const pin = String(body.pin || '');
+      const fail = json({ error: 'Name or PIN is wrong' }, 401);
+      if (!name || !pin) return fail;
+      const { data: people } = await db.from('instructors').select('*').eq('active', true);
+      const inst = (people || []).find((p) => p.name.toLowerCase() === name || (p.aliases || []).some((a) => a.toLowerCase() === name));
+      if (!inst) return fail;
+      const { data: res, error } = await db.rpc('check_pin', { p_instructor: inst.id, p_pin: pin });
+      if (error) throw error;
+      if (res === 'locked') return json({ error: 'Too many wrong tries. Wait 15 minutes, or ask an admin to reset your PIN.' }, 429);
+      if (res === 'nopin') return json({ error: 'You haven\'t joined yet. Use the join link from your team group.' }, 401);
+      if (res !== 'ok') return fail;
+      return json({ token_hash: await issueSession(db, inst) });
     }
 
     // ---------- signed-in ----------
@@ -57,57 +104,18 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ ok: true });
     }
 
+    if (action === 'telegram-link') {
+      await db.from('invite_codes').delete().eq('instructor_id', me.id).is('used_at', null);
+      const code = randomCode(12);
+      await db.from('invite_codes').insert({ code, instructor_id: me.id, created_by: me.id });
+      const link = await botLink(db, `inv_${code}`);
+      if (!link) return json({ error: 'Telegram alerts are not set up yet' }, 400);
+      return json({ link });
+    }
+
     if (action === 'test-notify') {
       const ok = await notify(db, me.id, '🔔 Test alert from BMTC Roster. Notifications are working.', { title: 'BMTC Roster', body: 'Test alert: notifications are working.' });
       return json({ ok });
-    }
-
-    if (action === 'swap-create') {
-      const { target_id, date, company, note } = body;
-      if (!target_id || !date || !company || target_id === me.id) return json({ error: 'missing fields' }, 400);
-      if (date < sgDate(0)) return json({ error: 'That date has passed' }, 400);
-      const { data: a } = await db.from('assignments').select('*').eq('instructor_id', me.id).eq('date', date).eq('company', company).maybeSingle();
-      if (!a) return json({ error: 'You are not on that slot' }, 400);
-      const { data: target } = await db.from('instructors').select('id,name').eq('id', target_id).eq('active', true).maybeSingle();
-      if (!target) return json({ error: 'Unknown instructor' }, 400);
-      const { data: sw, error } = await db.from('swap_requests').insert({ requester_id: me.id, target_id, date, company, note: note?.slice(0, 300) || null }).select().single();
-      if (error) throw error;
-      await notify(db, target_id,
-        `🔄 <b>${esc(me.name)}</b> asks you to cover <b>${esc(company)}</b>, ${fmtDate(date)}: ${esc(describe({ ...a, lessons: a.lessons || {} }))}${note ? `\n“${esc(note)}”` : ''}\n\n<a href="${APP_URL()}/#swaps">Accept or decline in the app</a>`,
-        { title: 'Swap request', body: `${me.name}: ${company}, ${fmtDate(date)}` });
-      return json({ ok: true, id: sw.id });
-    }
-
-    if (action === 'swap-respond' || action === 'swap-decide' || action === 'swap-cancel') {
-      const { data: sw } = await db.from('swap_requests').select('*').eq('id', body.id).maybeSingle();
-      if (!sw) return json({ error: 'not found' }, 404);
-      const names = new Map(((await db.from('instructors').select('id,name').in('id', [sw.requester_id, sw.target_id])).data || []).map((x) => [x.id, x.name]));
-      const R = names.get(sw.requester_id), T = names.get(sw.target_id);
-      const what = `${esc(sw.company)}, ${fmtDate(sw.date)}`;
-
-      if (action === 'swap-cancel') {
-        if (sw.requester_id !== me.id || !['pending', 'accepted'].includes(sw.status)) return json({ error: 'not allowed' }, 403);
-        await db.from('swap_requests').update({ status: 'cancelled' }).eq('id', sw.id);
-        await notify(db, sw.target_id, `🔄 ${esc(R)} cancelled the swap request for ${what}.`, { title: 'Swap cancelled', body: `${R}: ${sw.company}` });
-        return json({ ok: true });
-      }
-      if (action === 'swap-respond') {
-        if (sw.target_id !== me.id || sw.status !== 'pending') return json({ error: 'not allowed' }, 403);
-        const status = body.accept ? 'accepted' : 'declined';
-        await db.from('swap_requests').update({ status }).eq('id', sw.id);
-        await notify(db, sw.requester_id, `🔄 ${esc(T)} <b>${status}</b> your swap for ${what}.${body.accept ? ' Waiting for admin approval.' : ''}`, { title: `Swap ${status}`, body: `${T}: ${sw.company}, ${fmtDate(sw.date)}` });
-        if (body.accept) await notifyAdmins(db, `🔄 Swap needs approval: <b>${esc(R)}</b> → <b>${esc(T)}</b> for ${what}.\n<a href="${APP_URL()}/#swaps">Review</a>`, { title: 'Swap needs approval', body: `${R} → ${T}: ${sw.company}` });
-        return json({ ok: true });
-      }
-      // swap-decide (admin)
-      if (!me.is_admin || sw.status !== 'accepted') return json({ error: 'not allowed' }, 403);
-      const status = body.approve ? 'approved' : 'rejected';
-      await db.from('swap_requests').update({ status, decided_by: me.id, decided_at: new Date().toISOString() }).eq('id', sw.id);
-      const tail = body.approve ? ' The sheet will be updated and you\'ll get a change alert when it is.' : '';
-      for (const id of [sw.requester_id, sw.target_id]) {
-        await notify(db, id, `🔄 Swap ${R} → ${T} for ${what} was <b>${status}</b> by ${esc(me.name)}.${tail}`, { title: `Swap ${status}`, body: `${R} → ${T}: ${sw.company}` });
-      }
-      return json({ ok: true });
     }
 
     // ---------- admin ----------
@@ -129,14 +137,12 @@ export default async function handler(req: Request): Promise<Response> {
       if (body.off) { await setSetting(db, 'team_code', null); return json({ link: null }); }
       let code = await getSetting(db, 'team_code');
       if (!code || body.rotate) { code = randomCode(9); await setSetting(db, 'team_code', code); }
-      const link = await botLink(db, `team_${code}`);
-      if (!link) return json({ error: 'Connect the Telegram bot first (Admin → Settings).' }, 400);
-      return json({ link });
+      return json({ link: `${APP_URL()}/#join=${code}` });
     }
 
     if (action === 'team-link-status') {
       const code = await getSetting(db, 'team_code');
-      return json({ link: code ? await botLink(db, `team_${code}`) : null });
+      return json({ link: code ? `${APP_URL()}/#join=${code}` : null });
     }
 
     if (action === 'revoke') {
@@ -147,8 +153,19 @@ export default async function handler(req: Request): Promise<Response> {
       await db.from('contacts').update({ telegram_chat_id: null }).eq('instructor_id', inst.id);
       await db.from('push_subscriptions').delete().eq('instructor_id', inst.id);
       await db.from('invite_codes').delete().eq('instructor_id', inst.id);
+      await db.from('pins').delete().eq('instructor_id', inst.id);
       if (inst.user_id) { await db.auth.admin.deleteUser(inst.user_id); }
       await db.from('instructors').update({ user_id: null }).eq('id', inst.id);
+      return json({ ok: true });
+    }
+
+    if (action === 'reset-pin') {
+      // signs them out and lets them join again with the team link (Telegram link is kept)
+      const { data: inst } = await db.from('instructors').select('*').eq('id', body.instructor_id).maybeSingle();
+      if (!inst) return json({ error: 'not found' }, 404);
+      if (inst.id === me.id) return json({ error: 'Ask another admin to reset your PIN' }, 400);
+      await db.from('pins').delete().eq('instructor_id', inst.id);
+      if (inst.user_id) { await db.auth.admin.deleteUser(inst.user_id); await db.from('instructors').update({ user_id: null }).eq('id', inst.id); }
       return json({ ok: true });
     }
 
@@ -157,7 +174,7 @@ export default async function handler(req: Request): Promise<Response> {
       if (!meBot.ok) return json({ error: 'Bot token missing or wrong: ' + (meBot.description || '') }, 400);
       await setSetting(db, 'bot_username', meBot.result.username);
       const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/bmtc/telegram`;
-      const wh = await tg('setWebhook', { url, secret_token: await getSecret(db, 'TELEGRAM_WEBHOOK_SECRET'), allowed_updates: ['message', 'callback_query'], drop_pending_updates: true });
+      const wh = await tg('setWebhook', { url, secret_token: await getSecret(db, 'TELEGRAM_WEBHOOK_SECRET'), allowed_updates: ['message'], drop_pending_updates: true });
       await tg('setMyCommands', { commands: [
         { command: 'today', description: 'Your slots today' }, { command: 'tomorrow', description: 'Your slots tomorrow' },
         { command: 'week', description: 'Next 7 days' }, { command: 'login', description: 'Sign-in link for the app' },
