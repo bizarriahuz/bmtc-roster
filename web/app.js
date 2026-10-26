@@ -374,7 +374,8 @@ async function admPeople() {
   const linked = new Map((contacts || []).map((c) => [c.instructor_id, c]));
   const el = document.getElementById('adm');
   const linkedCount = S.people.filter((p) => linked.get(p.id)?.telegram_chat_id).length;
-  el.innerHTML = `<div class="row" style="gap:8px;margin-bottom:10px"><input type="search" id="q" placeholder="Search name"><button class="btn primary" id="add">Add</button></div>
+  el.innerHTML = `<div class="card" id="team"><div class="spin" style="margin:6px auto"></div></div>
+    <div class="row" style="gap:8px;margin-bottom:10px"><input type="search" id="q" placeholder="Search name"><button class="btn primary" id="add">Add</button></div>
     <p class="small muted">${S.people.filter((p) => p.active).length} active · ${linkedCount} linked to Telegram</p>
     <div class="card list" id="plist"></div>`;
   const draw = (q = '') => {
@@ -416,9 +417,33 @@ async function admPeople() {
       try { await api('revoke', { instructor_id: p.id }); toast('Access removed'); admPeople(); } catch (e) { toast(e.message); }
     });
   };
+  drawTeam();
   document.getElementById('q').oninput = (e) => draw(e.target.value);
   document.getElementById('add').onclick = () => editPerson(null);
   draw();
+}
+
+async function drawTeam(action) {
+  const box = document.getElementById('team'); if (!box) return;
+  let r;
+  try { r = action ? await api('team-link', action) : await api('team-link-status'); } catch (e) { box.innerHTML = `<b>Team join link</b><p class="small muted">${esc(e.message)}</p>`; return; }
+  box.innerHTML = r.link ? `
+    <div class="row between"><b>Team join link</b><span class="chip ok">on</span></div>
+    <p class="small muted">Post this in the team's Telegram group. Each person taps it, presses Start and picks their own name. You'll get a Telegram message for every join.</p>
+    <p><code class="k">${esc(r.link)}</code></p>
+    <div class="row wrap" style="gap:6px">
+      <button class="btn sm primary" id="t-copy">Copy</button>${navigator.share ? '<button class="btn sm" id="t-share">Share</button>' : ''}
+      <button class="btn sm" id="t-new">New link</button><button class="btn sm danger" id="t-off">Turn off</button>
+    </div>`
+  : `<div class="row between"><b>Team join link</b><span class="chip">off</span></div>
+    <p class="small muted">One link for the whole team instead of inviting people one by one. Turn it off once everyone has joined.</p>
+    <button class="btn sm primary" id="t-on">Create team link</button>`;
+  const msg = (l) => `Join BMTC Roster to get your PT deployment schedule and change alerts on Telegram. Tap, press Start, then pick your name: ${l}`;
+  box.querySelector('#t-on')?.addEventListener('click', () => drawTeam({}));
+  box.querySelector('#t-new')?.addEventListener('click', () => { if (confirm('Make a new link? The current one stops working.')) drawTeam({ rotate: true }); });
+  box.querySelector('#t-off')?.addEventListener('click', () => { if (confirm('Turn off the team link? People already linked are not affected.')) drawTeam({ off: true }); });
+  box.querySelector('#t-copy')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(msg(r.link)); toast('Copied with a short message'); } catch { toast('Copy failed, long-press the link'); } });
+  box.querySelector('#t-share')?.addEventListener('click', () => navigator.share({ text: msg(r.link) }).catch(() => {}));
 }
 
 function editPerson(p) {

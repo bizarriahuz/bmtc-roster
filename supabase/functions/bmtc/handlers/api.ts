@@ -124,6 +124,21 @@ export default async function handler(req: Request): Promise<Response> {
       return json({ link, name: inst.name });
     }
 
+    if (action === 'team-link') {
+      // get the current team join link; rotate=true makes a new one (old one stops working); off=true disables
+      if (body.off) { await setSetting(db, 'team_code', null); return json({ link: null }); }
+      let code = await getSetting(db, 'team_code');
+      if (!code || body.rotate) { code = randomCode(9); await setSetting(db, 'team_code', code); }
+      const link = await botLink(db, `team_${code}`);
+      if (!link) return json({ error: 'Connect the Telegram bot first (Admin → Settings).' }, 400);
+      return json({ link });
+    }
+
+    if (action === 'team-link-status') {
+      const code = await getSetting(db, 'team_code');
+      return json({ link: code ? await botLink(db, `team_${code}`) : null });
+    }
+
     if (action === 'revoke') {
       // remove someone's access immediately
       const { data: inst } = await db.from('instructors').select('*').eq('id', body.instructor_id).maybeSingle();
@@ -142,7 +157,7 @@ export default async function handler(req: Request): Promise<Response> {
       if (!meBot.ok) return json({ error: 'Bot token missing or wrong: ' + (meBot.description || '') }, 400);
       await setSetting(db, 'bot_username', meBot.result.username);
       const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/bmtc/telegram`;
-      const wh = await tg('setWebhook', { url, secret_token: await getSecret(db, 'TELEGRAM_WEBHOOK_SECRET'), allowed_updates: ['message'], drop_pending_updates: true });
+      const wh = await tg('setWebhook', { url, secret_token: await getSecret(db, 'TELEGRAM_WEBHOOK_SECRET'), allowed_updates: ['message', 'callback_query'], drop_pending_updates: true });
       await tg('setMyCommands', { commands: [
         { command: 'today', description: 'Your slots today' }, { command: 'tomorrow', description: 'Your slots tomorrow' },
         { command: 'week', description: 'Next 7 days' }, { command: 'login', description: 'Sign-in link for the app' },
