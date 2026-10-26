@@ -176,18 +176,36 @@ function route() {
 }
 
 // ---------- shared pieces ----------
+// Colour-coded slot pills. On "My roster" (highlightAll) your own slots get an outline, the rest are faded.
 function slotRow(lessons, mySlots, highlightAll) {
   const used = SLOTS.filter((s) => lessons?.[s] || (mySlots && mySlots.includes(s)));
   if (!used.length) return '';
   return `<div class="slots">${used.map((s) => {
-    const mine = highlightAll ? (!mySlots || mySlots.includes(s)) : false;
-    return `<span class="slot ${mine ? 'mine ' + s : ''}"><b>${SLOT_LABEL[s]}</b>${esc(lessons?.[s] || '—')}</span>`;
+    const mine = !mySlots || mySlots.includes(s);
+    const cls = highlightAll ? (mine ? 'mine' : 'dim') : '';
+    return `<span class="slot ${s} ${cls}"><b>${SLOT_LABEL[s]}</b>${esc(lessons?.[s] || '—')}</span>`;
   }).join('')}</div>`;
+}
+// Category colours for staff remarks (MC / leave / off / course) and company notes (NO PT / events / holidays)
+function remarkCat(t) {
+  const x = String(t).toLowerCase();
+  if (/\bmc\b|medical|hospital|\bhl\b/.test(x)) return 'cat-mc';
+  if (/\boil\b|\boff\b|in lieu/.test(x)) return 'cat-off';
+  if (/course|school|assessment|refresher|training|sfa|\btrg\b/.test(x)) return 'cat-crs';
+  if (/\bal\b|\bul\b|\bnpl\b|leave|\bloa\b|paternal|maternal|celebration|childcare/.test(x)) return 'cat-lv';
+  return '';
+}
+function noteCat(t) {
+  const x = String(t).toLowerCase();
+  if (/deepavali|diwali|hari raya|christmas|new year|ny day|chinese new|vesak|good friday|national day|labour day|public holiday|\bph\b/.test(x)) return 'cat-hol';
+  if (/no pt/.test(x)) return 'cat-nopt';
+  if (/enlist|camp|ifc|field|route march|graduation|pop\b|ippt/.test(x)) return 'cat-ev';
+  return '';
 }
 function personChip(id, slots) {
   const p = S.byId.get(id);
   const label = p ? p.name : '?';
-  return `<span class="chip ${id === S.me.id ? 'me' : ''}">${esc(label)}${slots ? ` <span class="mono" style="font-size:10px;opacity:.75">${slots.map((s) => SLOT_LABEL[s]).join('/')}</span>` : ''}</span>`;
+  return `<span class="chip ${id === S.me.id ? 'me' : ''}">${esc(label)}${slots ? slots.map((s) => `<span class="st ${s}">${SLOT_LABEL[s]}</span>`).join('') : ''}</span>`;
 }
 
 // ---------- My roster ----------
@@ -213,7 +231,7 @@ async function viewMe() {
   const dayCard = (date, list, isToday) => `
     <div class="card ${isToday ? 'today' : ''}">
       <div class="row between"><span class="big">${rel(date) ? `${rel(date)} <span class="muted small" style="font-weight:500">${fmt(date)}</span>` : fmt(date, true)}</span>
-      ${remarkByDate.get(date) ? `<span class="chip warn">${esc(remarkByDate.get(date))}</span>` : ''}</div>
+      ${remarkByDate.get(date) ? `<span class="chip cat ${remarkCat(remarkByDate.get(date)) || 'cat-lv'}">${esc(remarkByDate.get(date))}</span>` : ''}</div>
       ${list.length ? list.map((a) => {
         const co = others.filter((o) => o.date === a.date && o.company === a.company);
         return `<div style="margin-top:12px">
@@ -264,10 +282,11 @@ async function viewGrid() {
     <div class="daybar">${strip.map((x, i) => i === 0 ? `<button data-d="${x}">‹<small>prev wk</small></button>`
       : i === 8 ? `<button data-d="${x}">›<small>next wk</small></button>`
       : `<button data-d="${x}" class="${x === d ? 'on' : ''}">${DOW[new Date(x + 'T00:00:00Z').getUTCDay()]}<small>${new Date(x + 'T00:00:00Z').getUTCDate()}</small></button>`).join('')}</div>
-    <div class="seg">${schools.map((s) => `<button data-s="${esc(s)}" class="${s === S.school ? 'on' : ''}">${esc(s)}</button>`).join('')}</div>`;
+    <div class="seg">${schools.map((s) => `<button data-s="${esc(s)}" class="${s === S.school ? 'on' : ''}">${esc(s)}</button>`).join('')}</div>
+    <div class="legend">${SLOTS.map((x) => `<span class="slot ${x}" style="padding:2px 8px;font-size:12px"><b style="margin:0">${SLOT_LABEL[x]}</b></span>`).join('')}</div>`;
 
   if (remarks?.length && (S.school === 'All')) {
-    html += `<div class="card"><div class="small muted" style="margin-bottom:6px;font-weight:600">STAFF REMARKS</div><div class="row wrap" style="gap:4px">${remarks.map((r) => `<span class="chip ${r.instructor_id === S.me.id ? 'warn' : ''}">${esc(r.text)}</span>`).join('')}</div></div>`;
+    html += `<div class="card"><div class="small muted" style="margin-bottom:6px;font-weight:600">STAFF REMARKS</div><div class="row wrap" style="gap:4px">${remarks.map((r) => `<span class="chip cat ${remarkCat(r.text)}" ${r.instructor_id === S.me.id ? 'style="font-weight:700"' : ''}>${esc(r.text)}</span>`).join('')}</div></div>`;
   }
   let shown = 0;
   for (const c of coys) {
@@ -281,7 +300,7 @@ async function viewGrid() {
       <div class="row between"><span class="coy">${esc(c.name)}</span><span class="small muted">${esc(c.school || '')}</span></div>
       ${list.length ? slotRow(lessons, null, false) : ''}
       ${list.length ? `<div class="row wrap" style="gap:4px;margin-top:8px">${list.sort((x, y) => (S.byId.get(x.instructor_id)?.name || '').localeCompare(S.byId.get(y.instructor_id)?.name || '')).map((a) => personChip(a.instructor_id, a.slots)).join('')}</div>` : ''}
-      ${note ? `<div class="note">${esc(note.text)}</div>` : ''}
+      ${note ? (noteCat(note.text) ? `<div style="margin-top:8px"><span class="chip cat ${noteCat(note.text)}">${esc(note.text)}</span></div>` : `<div class="note">${esc(note.text)}</div>`) : ''}
     </div>`;
   }
   if (!shown) html += '<div class="empty">Nothing scheduled for this day.</div>';
@@ -300,7 +319,7 @@ async function viewSettings() {
   const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window;
   let pushOn = false;
   if (pushSupported) { const reg = await navigator.serviceWorker.getRegistration(); pushOn = !!(await reg?.pushManager.getSubscription()); }
-  const theme = (() => { try { return localStorage.getItem('theme') || 'auto'; } catch { return 'auto'; } })();
+  const theme = (() => { try { return localStorage.getItem('theme') === 'dark' ? 'dark' : 'light'; } catch { return 'light'; } })();
 
   document.getElementById('view').innerHTML = `<h1>Settings</h1>
     <div class="card">
@@ -319,8 +338,7 @@ async function viewSettings() {
       <label class="tog"><span>Alerts as phone notifications</span><input type="checkbox" data-k="notify_push" ${c?.notify_push !== false ? 'checked' : ''} ${c ? '' : 'disabled'}></label>
       <label class="tog"><span>Daily reminders<div class="small muted">6:30am today · 12pm afternoon · 7pm tomorrow</div></span><input type="checkbox" data-k="nightly_reminder" ${c?.nightly_reminder !== false ? 'checked' : ''} ${c ? '' : 'disabled'}></label>
     </div>
-    <div class="card"><div class="row between"><b>Theme</b>
-      <select id="theme" style="width:auto">${['auto', 'light', 'dark'].map((t) => `<option ${t === theme ? 'selected' : ''}>${t}</option>`).join('')}</select></div></div>
+    <div class="card"><label class="tog" style="border:0;padding:0"><span><b>Dark mode</b></span><input type="checkbox" id="theme" ${theme === 'dark' ? 'checked' : ''}></label></div>
     <div class="row" style="gap:8px;margin-top:14px">
       <button class="btn" id="test">Send test alert</button>
       <button class="btn danger" id="out" style="margin-left:auto">Sign out</button>
@@ -337,12 +355,13 @@ async function viewSettings() {
   });
   document.getElementById('test').onclick = async () => { try { const r = await api('test-notify'); toast(r.ok ? 'Test alert sent' : 'No channel is set up yet'); } catch (e) { toast(e.message); } };
   document.getElementById('out').onclick = async () => { await sb.auth.signOut(); location.hash = ''; location.reload(); };
-  document.getElementById('theme').onchange = (e) => { const v = e.target.value; try { localStorage.setItem('theme', v); } catch {} applyTheme(); };
+  document.getElementById('theme').onchange = (e) => { try { localStorage.setItem('theme', e.target.checked ? 'dark' : 'light'); } catch {} applyTheme(); };
 }
 
 function applyTheme() {
-  let t = 'auto'; try { t = localStorage.getItem('theme') || 'auto'; } catch {}
-  if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);
+  let t = 'light'; try { t = localStorage.getItem('theme') === 'dark' ? 'dark' : 'light'; } catch {}
+  document.documentElement.setAttribute('data-theme', t);
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', t === 'dark' ? '#1f2a1a' : '#3d5a2e');
 }
 applyTheme();
 
