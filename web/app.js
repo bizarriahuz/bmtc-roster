@@ -317,7 +317,7 @@ async function viewSettings() {
     <div class="card">
       <label class="tog"><span>Alerts on Telegram</span><input type="checkbox" data-k="notify_telegram" ${c?.notify_telegram !== false ? 'checked' : ''} ${c ? '' : 'disabled'}></label>
       <label class="tog"><span>Alerts as phone notifications</span><input type="checkbox" data-k="notify_push" ${c?.notify_push !== false ? 'checked' : ''} ${c ? '' : 'disabled'}></label>
-      <label class="tog"><span>Evening reminder of tomorrow's slots</span><input type="checkbox" data-k="nightly_reminder" ${c?.nightly_reminder !== false ? 'checked' : ''} ${c ? '' : 'disabled'}></label>
+      <label class="tog"><span>Daily reminders<div class="small muted">6:30am today · 12pm afternoon · 7pm tomorrow</div></span><input type="checkbox" data-k="nightly_reminder" ${c?.nightly_reminder !== false ? 'checked' : ''} ${c ? '' : 'disabled'}></label>
     </div>
     <div class="card"><div class="row between"><b>Theme</b>
       <select id="theme" style="width:auto">${['auto', 'light', 'dark'].map((t) => `<option ${t === theme ? 'selected' : ''}>${t}</option>`).join('')}</select></div></div>

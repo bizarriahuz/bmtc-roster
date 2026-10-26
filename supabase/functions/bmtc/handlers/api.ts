@@ -72,6 +72,7 @@ export default async function handler(req: Request): Promise<Response> {
       if (existing) return json({ error: `${inst.name} has already joined. If that's you, sign in with your PIN or ask an admin to reset it.` }, 409);
       const { error: pe } = await db.rpc('set_pin', { p_instructor: inst.id, p_pin: pin });
       if (pe) throw pe;
+      await db.from('contacts').upsert({ instructor_id: inst.id }, { onConflict: 'instructor_id', ignoreDuplicates: true });
       await notifyAdmins(db, `👤 <b>${esc(inst.name)}</b> joined BMTC Roster.\nWrong person? Admin → People → Reset PIN.`, null);
       return json({ token_hash: await issueSession(db, inst), name: inst.name });
     }
@@ -133,7 +134,6 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     if (action === 'team-link') {
-      // get the current team join link; rotate=true makes a new one (old one stops working); off=true disables
       if (body.off) { await setSetting(db, 'team_code', null); return json({ link: null }); }
       let code = await getSetting(db, 'team_code');
       if (!code || body.rotate) { code = randomCode(9); await setSetting(db, 'team_code', code); }
@@ -146,7 +146,6 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     if (action === 'revoke') {
-      // remove someone's access immediately
       const { data: inst } = await db.from('instructors').select('*').eq('id', body.instructor_id).maybeSingle();
       if (!inst) return json({ error: 'not found' }, 404);
       if (inst.id === me.id) return json({ error: 'You cannot revoke yourself' }, 400);
@@ -160,7 +159,6 @@ export default async function handler(req: Request): Promise<Response> {
     }
 
     if (action === 'reset-pin') {
-      // signs them out and lets them join again with the team link (Telegram link is kept)
       const { data: inst } = await db.from('instructors').select('*').eq('id', body.instructor_id).maybeSingle();
       if (!inst) return json({ error: 'not found' }, 404);
       if (inst.id === me.id) return json({ error: 'Ask another admin to reset your PIN' }, 400);

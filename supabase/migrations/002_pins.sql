@@ -41,3 +41,12 @@ create or replace view public.joined as select instructor_id, set_at from public
 grant select on public.joined to authenticated;
 alter view public.joined set (security_invoker = false);
 revoke select on public.joined from anon;
+
+-- 003: every instructor gets a contacts row (so Settings switches work); three daily reminders
+insert into public.contacts (instructor_id) select id from public.instructors on conflict do nothing;
+create or replace function public.ensure_contact() returns trigger language plpgsql security definer set search_path = public as $$
+begin insert into public.contacts (instructor_id) values (new.id) on conflict do nothing; return new; end $$;
+create trigger instructors_contact after insert on public.instructors for each row execute function public.ensure_contact();
+revoke execute on function public.ensure_contact() from public, anon, authenticated;
+-- cron (UTC): bmtc-reminder-morning '30 22 * * *' (06:30 SGT), bmtc-reminder-midday '0 4 * * *' (12:00),
+-- bmtc-reminder '0 11 * * *' (19:00), each POSTing /functions/v1/bmtc/reminder?kind=... with x-cron-secret

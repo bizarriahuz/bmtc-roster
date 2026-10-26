@@ -1,5 +1,5 @@
 // BMTC Roster service worker: push notifications + offline shell
-const CACHE = 'bmtc-v4';
+const CACHE = 'bmtc-v5';
 const SHELL = ['./', './index.html', './app.js', './manifest.json', './icon.svg'];
 
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())); });
