@@ -40,7 +40,6 @@ async function api(action, body = {}) {
 const icon = {
   me: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
   grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 4v17M14 4v17"/></svg>',
-  swap: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 7h13l-4-4M17 17H4l4 4"/></svg>',
   set: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
   admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>',
 };
@@ -101,21 +100,19 @@ async function loadBase() {
 
 // ---------- shell ----------
 async function shell(active, html) {
-  const { count } = await sb.from('swap_requests').select('id', { count: 'exact', head: true })
-    .or(`and(target_id.eq.${S.me.id},status.eq.pending)${S.me.is_admin ? ',status.eq.accepted' : ''}`);
   const tab = (id, label, ic, badge) => `<a href="#${id}" class="${active === id ? 'on' : ''}">${ic}${label}${badge ? `<span class="dot">${badge}</span>` : ''}</a>`;
   $app.innerHTML = `
     <header class="top"><span class="brand">BMTC Roster</span><span class="who">${esc(S.me.name)}</span></header>
     <main id="view">${html}</main>
     <nav class="tabs">
-      ${tab('me', 'My roster', icon.me)}${tab('grid', 'All coys', icon.grid)}${tab('swaps', 'Swaps', icon.swap, count || 0)}
+      ${tab('me', 'My roster', icon.me)}${tab('grid', 'All coys', icon.grid)}
       ${tab('settings', 'Settings', icon.set)}${S.me.is_admin ? tab('admin', 'Admin', icon.admin) : ''}
     </nav>`;
 }
 
 function route() {
   const h = (location.hash.replace('#', '').split('&')[0]) || 'me';
-  ({ me: viewMe, grid: viewGrid, swaps: viewSwaps, settings: viewSettings, admin: S.me.is_admin ? viewAdmin : viewMe }[h] || viewMe)();
+  ({ me: viewMe, grid: viewGrid, settings: viewSettings, admin: S.me.is_admin ? viewAdmin : viewMe }[h] || viewMe)();
   window.scrollTo(0, 0);
 }
 
@@ -161,8 +158,7 @@ async function viewMe() {
       ${list.length ? list.map((a) => {
         const co = others.filter((o) => o.date === a.date && o.company === a.company);
         return `<div style="margin-top:12px">
-          <div class="row between"><span class="coy">${esc(a.company)}</span>
-            <button class="btn sm" data-swap="${a.date}|${esc(a.company)}">Swap</button></div>
+          <div class="coy">${esc(a.company)}</div>
           ${slotRow(a.lessons, a.slots, true)}
           ${co.length ? `<div class="row wrap" style="margin-top:8px;gap:4px"><span class="small muted">With</span>${co.map((o) => personChip(o.instructor_id, o.slots)).join('')}</div>` : ''}
         </div>`;
@@ -187,7 +183,6 @@ async function viewMe() {
       </div>`).join('')}</div>`;
   }
   document.getElementById('view').innerHTML = html;
-  document.querySelectorAll('[data-swap]').forEach((b) => b.onclick = () => openSwap(...b.dataset.swap.split('|')));
 }
 
 // ---------- All companies (day view) ----------
@@ -234,64 +229,6 @@ async function viewGrid() {
   document.getElementById('view').innerHTML = html;
   document.querySelectorAll('[data-d]').forEach((b) => b.onclick = () => { S.gridDate = b.dataset.d; viewGrid(); });
   document.querySelectorAll('[data-s]').forEach((b) => b.onclick = () => { S.school = b.dataset.s; viewGrid(); });
-}
-
-// ---------- Swaps ----------
-function openSwap(date, company) {
-  const others = S.people.filter((p) => p.active && p.id !== S.me.id).sort((a, b) => a.name.localeCompare(b.name));
-  const dlg = document.createElement('dialog');
-  dlg.innerHTML = `<div class="in">
-    <div class="big">Ask for a swap</div>
-    <p class="muted small">${esc(company)} · ${fmt(date, true)}</p>
-    <label class="small muted">Who should cover?</label>
-    <select id="sw-t"><option value="">Choose instructor…</option>${others.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
-    <label class="small muted" style="display:block;margin-top:10px">Note (optional)</label>
-    <textarea id="sw-n" maxlength="300" placeholder="e.g. I'll take your Friday AM in return"></textarea>
-    <p class="small muted">They accept or decline, then an admin approves. The planner still updates the sheet.</p>
-    <div class="row" style="justify-content:flex-end;margin-top:6px"><button class="btn" id="sw-x">Cancel</button><button class="btn primary" id="sw-go">Send request</button></div>
-  </div>`;
-  document.body.appendChild(dlg); dlg.showModal();
-  dlg.querySelector('#sw-x').onclick = () => dlg.remove();
-  dlg.querySelector('#sw-go').onclick = async (e) => {
-    const t = dlg.querySelector('#sw-t').value; if (!t) return toast('Pick someone first');
-    e.target.disabled = true;
-    try { await api('swap-create', { target_id: t, date, company, note: dlg.querySelector('#sw-n').value }); toast('Swap request sent'); dlg.remove(); }
-    catch (err) { toast(err.message); e.target.disabled = false; }
-  };
-}
-
-async function viewSwaps() {
-  await shell('swaps', '<div class="spin"></div>');
-  const { data } = await sb.from('swap_requests').select('*').order('created_at', { ascending: false }).limit(60);
-  const all = data || [];
-  const name = (id) => esc(S.byId.get(id)?.name || '?');
-  const statusChip = (s) => `<span class="chip ${s === 'approved' ? 'ok' : s === 'pending' || s === 'accepted' ? 'warn' : 'bad'}">${s === 'accepted' ? 'awaiting admin' : s}</span>`;
-  const item = (s, actions) => `<div><div class="row between"><b>${esc(s.company)} · ${fmt(s.date)}</b>${statusChip(s.status)}</div>
-    <div class="small">${name(s.requester_id)} → ${name(s.target_id)}</div>${s.note ? `<div class="small muted">“${esc(s.note)}”</div>` : ''}
-    ${actions ? `<div class="row" style="margin-top:8px;gap:6px">${actions}</div>` : ''}</div>`;
-
-  const incoming = all.filter((s) => s.target_id === S.me.id && s.status === 'pending');
-  const toApprove = S.me.is_admin ? all.filter((s) => s.status === 'accepted') : [];
-  const mine = all.filter((s) => s.requester_id === S.me.id || (s.target_id === S.me.id && s.status !== 'pending'));
-  let html = '<h1>Swaps</h1><p class="small muted">To request a swap, tap <b>Swap</b> on one of your slots in My roster.</p>';
-  if (toApprove.length) html += `<h2>Needs your approval</h2><div class="card list">${toApprove.map((s) => item(s, `<button class="btn sm primary" data-act="decide" data-id="${s.id}" data-v="1">Approve</button><button class="btn sm danger" data-act="decide" data-id="${s.id}" data-v="0">Reject</button>`)).join('')}</div>`;
-  if (incoming.length) html += `<h2>Asked of you</h2><div class="card list">${incoming.map((s) => item(s, `<button class="btn sm primary" data-act="respond" data-id="${s.id}" data-v="1">Accept</button><button class="btn sm" data-act="respond" data-id="${s.id}" data-v="0">Decline</button>`)).join('')}</div>`;
-  html += `<h2>Your swaps</h2>${mine.length ? `<div class="card list">${mine.map((s) => item(s, s.requester_id === S.me.id && ['pending', 'accepted'].includes(s.status) ? `<button class="btn sm" data-act="cancel" data-id="${s.id}">Cancel request</button>` : '')).join('')}</div>` : '<div class="empty">No swaps yet.</div>'}`;
-  if (S.me.is_admin) {
-    const past = all.filter((s) => !toApprove.includes(s) && !mine.includes(s) && !incoming.includes(s)).slice(0, 15);
-    if (past.length) html += `<h2>Other recent swaps</h2><div class="card list">${past.map((s) => item(s)).join('')}</div>`;
-  }
-  document.getElementById('view').innerHTML = html;
-  document.querySelectorAll('[data-act]').forEach((b) => b.onclick = async () => {
-    b.disabled = true;
-    try {
-      const id = b.dataset.id, v = b.dataset.v === '1';
-      if (b.dataset.act === 'decide') await api('swap-decide', { id, approve: v });
-      if (b.dataset.act === 'respond') await api('swap-respond', { id, accept: v });
-      if (b.dataset.act === 'cancel') await api('swap-cancel', { id });
-      toast('Done'); viewSwaps();
-    } catch (e) { toast(e.message); b.disabled = false; }
-  });
 }
 
 // ---------- Settings ----------
@@ -454,7 +391,7 @@ function editPerson(p) {
     <label class="small muted" style="display:block;margin-top:8px">Other spellings in the sheet (comma separated)</label><input type="text" id="e-a" value="${esc((p?.aliases || []).join(', '))}">
     <label class="small muted" style="display:block;margin-top:8px">School</label>
     <input type="text" id="e-s" list="schools" value="${esc(p?.school || '')}"><datalist id="schools">${schools.map((s) => `<option value="${esc(s)}">`).join('')}</datalist>
-    <label class="tog"><span>Admin (can manage people and approve swaps)</span><input type="checkbox" id="e-ad" ${p?.is_admin ? 'checked' : ''}></label>
+    <label class="tog"><span>Admin (can manage people and settings)</span><input type="checkbox" id="e-ad" ${p?.is_admin ? 'checked' : ''}></label>
     <label class="tog"><span>Active</span><input type="checkbox" id="e-ac" ${!p || p.active ? 'checked' : ''}></label>
     <div class="row" style="justify-content:flex-end;gap:6px;margin-top:8px"><button class="btn" id="e-x">Cancel</button><button class="btn primary" id="e-ok">Save</button></div></div>`;
   document.body.appendChild(dlg); dlg.showModal();
