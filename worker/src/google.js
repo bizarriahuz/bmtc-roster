@@ -6,9 +6,9 @@ function b64url(bytes) {
 }
 
 let cached = null;
-async function accessToken() {
+async function accessToken(env) {
   if (cached && cached.exp > Date.now() + 60000) return cached.token;
-  const raw = Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON');
+  const raw = env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!raw) throw new Error('GOOGLE_SERVICE_ACCOUNT_JSON secret is not set');
   const sa = JSON.parse(raw);
   const now = Math.floor(Date.now() / 1000);
@@ -36,12 +36,12 @@ async function accessToken() {
   return cached.token;
 }
 
-export function serviceAccountEmail() {
-  try { return JSON.parse(Deno.env.get('GOOGLE_SERVICE_ACCOUNT_JSON') || '{}').client_email || null; } catch { return null; }
+export function serviceAccountEmail(env) {
+  try { return JSON.parse(env.GOOGLE_SERVICE_ACCOUNT_JSON || '{}').client_email || null; } catch { return null; }
 }
 
-export async function listTabs(sheetId) {
-  const t = await accessToken();
+export async function listTabs(env, sheetId) {
+  const t = await accessToken(env);
   const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}?fields=sheets.properties.title`, {
     headers: { Authorization: `Bearer ${t}` },
   });
@@ -50,9 +50,9 @@ export async function listTabs(sheetId) {
   return j.sheets.map((s) => s.properties.title);
 }
 
-export async function fetchGrids(sheetId, titles) {
+export async function fetchGrids(env, sheetId, titles) {
   if (!titles.length) return {};
-  const t = await accessToken();
+  const t = await accessToken(env);
   const q = new URLSearchParams({ valueRenderOption: 'UNFORMATTED_VALUE', dateTimeRenderOption: 'SERIAL_NUMBER' });
   for (const title of titles) q.append('ranges', `'${title.replace(/'/g, "''")}'!A1:AP240`);
   const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchGet?${q}`, {

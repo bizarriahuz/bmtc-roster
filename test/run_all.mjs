@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { parseTab, tabStartDate } from '../supabase/functions/_shared/parser.js';
+import { parseTab, tabStartDate } from '../worker/src/parser.js';
 const grids = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 // pass 1: roster names from roster rows of every tab
 const names = new Map();

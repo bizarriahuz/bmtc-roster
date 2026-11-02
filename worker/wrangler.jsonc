@@ -1,0 +1,15 @@
+// BMTC Roster API, Telegram webhook and scheduled jobs.
+// Deployed by .github/workflows/deploy-worker.yml on every push to main that touches worker/.
+// Secrets (set once): TELEGRAM_BOT_TOKEN, GOOGLE_SERVICE_ACCOUNT_JSON
+{
+  "name": "bmtc-roster-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": true,
+  "triggers": { "crons": ["* * * * *"] },
+  "vars": { "APP_URL": "https://bmtc-roster.pages.dev" },
+  "d1_databases": [
+    { "binding": "DB", "database_name": "bmtc-roster", "database_id": "REPLACE_WITH_D1_DATABASE_ID" }
+  ],
+  "observability": { "enabled": true }
+}
