@@ -1,5 +1,5 @@
 // The API (Cloudflare Worker "bmtc-roster-api", see worker/). Signed-in phones keep a session token.
-const API = 'https://bmtc-roster-api.zuhair-7d5.workers.dev/api';
+const API = 'https://bmtc-roster-api.zuhair-bcc.workers.dev/api';
 const TOKEN_KEY = 'bmtc_session';
 const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
 const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };

@@ -9,7 +9,7 @@
   "triggers": { "crons": ["* * * * *"] },
   "vars": { "APP_URL": "https://bmtc-roster.pages.dev" },
   "d1_databases": [
-    { "binding": "DB", "database_name": "bmtc-roster", "database_id": "REPLACE_WITH_D1_DATABASE_ID" }
+    { "binding": "DB", "database_name": "bmtc-roster", "database_id": "691c2e51-8b83-4046-99fa-4c4f23d8ad31" }
   ],
   "observability": { "enabled": true }
 }
