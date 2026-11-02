@@ -1,0 +1,13 @@
+{
+  "name": "bmtc-roster-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --test-scheduled",
+    "db:local": "wrangler d1 execute bmtc-roster --local --file=schema.sql",
+    "db:remote": "wrangler d1 execute bmtc-roster --remote --file=schema.sql",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": { "bcryptjs": "^2.4.3" },
+  "devDependencies": { "wrangler": "^4" }
+}

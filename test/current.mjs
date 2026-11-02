@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { parseTab, describe } from '../supabase/functions/bmtc/lib/parser.js';
+import { parseTab, describe } from '../worker/src/parser.js';
 const grids = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 const names = ['Antonio','Rizqan','Wesley','Azim','Syasya','Danial','Eric','Haziq','Yong Yi','Amos','Ahmad','Azfar','Arif','Zul','Hefi','Izzuddin','Shahril','Azizi','Ziv','Irwan','Keith','Zaini','Hafiz','Shaf','Taufiq','Vikenesh','Darwisy','Fazli','Aswad','Sasthi','Haiqal','Nazim','Sulaiman','Danish','Zaki','Han Hui','Casper','Latfi'];
 const al = { Izzuddin: ['Izzudin'], Keith: ['Keith Pereira'], Vikenesh: ['Vicknesh', 'Vick'], Latfi: ['Lafti'] };

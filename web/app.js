@@ -1,9 +1,8 @@
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/+esm';
-
-const SUPABASE_URL = 'https://zyjwmglfitwupjwnvpug.supabase.co';
-const SUPABASE_KEY = 'sb_publishable_y68yv8xu29T5sdD5a2B46Q_-uH4Sdfe';
-const API = `${SUPABASE_URL}/functions/v1/bmtc/api`;
-const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+// The API (Cloudflare Worker "bmtc-roster-api", see worker/). Signed-in phones keep a session token.
+const API = 'https://bmtc-roster-api.zuhair-bcc.workers.dev/api';
+const TOKEN_KEY = 'bmtc_session';
+const getToken = () => { try { return localStorage.getItem(TOKEN_KEY); } catch { return null; } };
+const setToken = (t) => { try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); } catch {} };
 
 const SLOTS = ['AM', 'MID1', 'MID2', 'PM'];
 const SLOT_LABEL = { AM: 'AM', MID1: 'Mid 1', MID2: 'Mid 2', PM: 'PM' };
@@ -27,14 +26,14 @@ function describe(a) {
   return parts.length ? parts.join(', ') : 'Full day';
 }
 async function api(action, body = {}) {
-  const { data: { session } } = await sb.auth.getSession();
+  const token = getToken();
   const r = await fetch(API, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', apikey: SUPABASE_KEY, ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     body: JSON.stringify({ action, ...body }),
   });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok || j.error) throw new Error(j.error || `Request failed (${r.status})`);
+  if (!r.ok || j.error) { const e = new Error(j.error || `Request failed (${r.status})`); e.status = r.status; throw e; }
   return j;
 }
 const icon = {
@@ -46,10 +45,8 @@ const icon = {
 const MARK = '<svg class="mark" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#3d5a2e"/><path d="M14 22h36M14 32h36M14 42h24" stroke="#e3ead9" stroke-width="5" stroke-linecap="round"/><circle cx="46" cy="42" r="5" fill="#f0a16a"/></svg>';
 
 // ---------- auth ----------
-async function startSession(token_hash) {
-  await sb.auth.signOut().catch(() => {});
-  const { error } = await sb.auth.verifyOtp({ token_hash, type: 'magiclink' });
-  if (error) throw error;
+function startSession(session) {
+  setToken(session);
   history.replaceState(null, '', location.pathname + '#me');
   location.reload();
 }
@@ -57,28 +54,30 @@ async function startSession(token_hash) {
 async function boot() {
   const j = location.hash.match(/join=([A-Za-z0-9_-]+)/);
   if (j) {
-    const { data: { session } } = await sb.auth.getSession();
-    if (!session) return renderJoin(j[1]);
+    if (!getToken()) return renderJoin(j[1]);
     history.replaceState(null, '', location.pathname + '#me');
   }
   const m = location.hash.match(/login=([A-Za-z0-9_-]+)/);
   if (m) {
     $app.innerHTML = '<div class="spin"></div>';
     try {
-      await sb.auth.signOut().catch(() => {});
-      const { token_hash } = await api('exchange-login', { code: m[1] });
-      const { error } = await sb.auth.verifyOtp({ token_hash, type: 'magiclink' });
-      if (error) throw error;
+      setToken(null);
+      const { session } = await api('exchange-login', { code: m[1] });
+      setToken(session);
       history.replaceState(null, '', location.pathname + '#me');
     } catch (e) {
       history.replaceState(null, '', location.pathname);
       return renderLogin(e.message);
     }
   }
-  const { data: { session } } = await sb.auth.getSession();
-  if (!session) return renderLogin();
-  const { data: me } = await sb.from('instructors').select('*').eq('user_id', session.user.id).maybeSingle();
-  if (!me || !me.active) { await sb.auth.signOut(); return renderLogin('Your access has been removed. Ask an admin.'); }
+  if (!getToken()) return renderLogin();
+  let me;
+  try { ({ me } = await api('me')); }
+  catch (e) {
+    if (e.status === 401) { setToken(null); return renderLogin('You were signed out. Sign in with your name and PIN.'); }
+    $app.innerHTML = `<div class="login">${MARK}<h1>BMTC Roster</h1><div class="banner">${esc(e.message)}</div><button class="btn primary block" onclick="location.reload()">Try again</button></div>`;
+    return;
+  }
   S.me = me;
   await loadBase();
   registerSW();
@@ -105,8 +104,8 @@ async function renderLogin(err) {
     e.preventDefault();
     const btn = e.target.querySelector('button'); btn.disabled = true;
     try {
-      const { token_hash } = await api('pin-login', { name: document.getElementById('ln').value, pin: document.getElementById('lp').value });
-      await startSession(token_hash);
+      const { session } = await api('pin-login', { name: document.getElementById('ln').value, pin: document.getElementById('lp').value });
+      startSession(session);
     } catch (err2) { toast(err2.message); btn.disabled = false; }
   };
 }
@@ -139,22 +138,18 @@ async function renderJoin(code) {
     if (pin !== pin2) return toast("The two PINs don't match");
     const btn = e.target.querySelector('button'); btn.disabled = true;
     try {
-      const { token_hash } = await api('join', { code, instructor_id: document.getElementById('jn').value, pin });
-      await startSession(token_hash);
+      const { session } = await api('join', { code, instructor_id: document.getElementById('jn').value, pin });
+      startSession(session);
     } catch (err) { toast(err.message); btn.disabled = false; }
   };
 }
 
 async function loadBase() {
-  const [p, c, cfg] = await Promise.all([
-    sb.from('instructors').select('id,name,school,aliases,is_admin,active,user_id').order('name'),
-    sb.from('companies').select('*').order('sort'),
-    api('public-config').catch(() => ({})),
-  ]);
-  S.people = p.data || [];
+  const b = await api('base');
+  S.people = b.people || [];
   S.byId = new Map(S.people.map((x) => [x.id, x]));
-  S.companies = c.data || [];
-  S.config = cfg;
+  S.companies = b.companies || [];
+  S.config = b.config || {};
 }
 
 // ---------- shell ----------
@@ -211,19 +206,8 @@ function personChip(id, slots) {
 // ---------- My roster ----------
 async function viewMe() {
   await shell('me', '<div class="spin"></div>');
-  const today = sgToday(), until = addDays(today, 20);
-  const [{ data: mine }, { data: changes }, { data: myRemarks }] = await Promise.all([
-    sb.from('assignments').select('*').eq('instructor_id', S.me.id).gte('date', today).lte('date', until).order('date'),
-    sb.from('changes').select('*').eq('instructor_id', S.me.id).order('created_at', { ascending: false }).limit(8),
-    sb.from('remarks').select('*').eq('instructor_id', S.me.id).gte('date', today).lte('date', until),
-  ]);
-  const keys = [...new Set((mine || []).map((a) => `${a.date}|${a.company}`))];
-  let others = [];
-  if (keys.length) {
-    const dates = [...new Set((mine || []).map((a) => a.date))];
-    const { data } = await sb.from('assignments').select('date,company,instructor_id,slots').in('date', dates);
-    others = (data || []).filter((o) => keys.includes(`${o.date}|${o.company}`) && o.instructor_id !== S.me.id);
-  }
+  const today = sgToday();
+  const { mine, changes, remarks: myRemarks, others } = await api('my-roster');
   const byDate = new Map();
   for (const a of mine || []) { if (!byDate.has(a.date)) byDate.set(a.date, []); byDate.get(a.date).push(a); }
   const remarkByDate = new Map((myRemarks || []).map((r) => [r.date, r.text]));
@@ -267,11 +251,7 @@ async function viewGrid() {
   if (!S.gridDate) S.gridDate = sgToday();
   await shell('grid', '<div class="spin"></div>');
   const d = S.gridDate;
-  const [{ data: as }, { data: notes }, { data: remarks }] = await Promise.all([
-    sb.from('assignments').select('*').eq('date', d),
-    sb.from('day_notes').select('*').eq('date', d),
-    sb.from('remarks').select('*').eq('date', d),
-  ]);
+  const { assignments: as, notes, remarks } = await api('day', { date: d });
   // week strip (Mon-Sun around the date)
   const dt = new Date(d + 'T00:00:00Z'); const mon = addDays(d, -((dt.getUTCDay() + 6) % 7));
   const strip = [-7, 0, 1, 2, 3, 4, 5, 6, 7].map((i) => addDays(mon, i));
@@ -315,7 +295,7 @@ const standalone = matchMedia('(display-mode: standalone)').matches || navigator
 
 async function viewSettings() {
   await shell('settings', '<div class="spin"></div>');
-  const { data: c } = await sb.from('contacts').select('*').eq('instructor_id', S.me.id).maybeSingle();
+  const { contact: c } = await api('contact-get');
   const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window;
   let pushOn = false;
   if (pushSupported) { const reg = await navigator.serviceWorker.getRegistration(); pushOn = !!(await reg?.pushManager.getSubscription()); }
@@ -344,8 +324,7 @@ async function viewSettings() {
       <button class="btn danger" id="out" style="margin-left:auto">Sign out</button>
     </div>`;
   document.querySelectorAll('[data-k]').forEach((i) => i.onchange = async () => {
-    const { error } = await sb.from('contacts').update({ [i.dataset.k]: i.checked }).eq('instructor_id', S.me.id);
-    toast(error ? error.message : 'Saved');
+    try { await api('contact-set', { key: i.dataset.k, value: i.checked }); toast('Saved'); } catch (e) { toast(e.message); }
   });
   document.getElementById('push-on')?.addEventListener('click', enablePush);
   document.getElementById('tg-on')?.addEventListener('click', async (e) => {
@@ -354,7 +333,7 @@ async function viewSettings() {
     catch (err) { w?.close(); toast(err.message); }
   });
   document.getElementById('test').onclick = async () => { try { const r = await api('test-notify'); toast(r.ok ? 'Test alert sent' : 'No channel is set up yet'); } catch (e) { toast(e.message); } };
-  document.getElementById('out').onclick = async () => { await sb.auth.signOut(); location.hash = ''; location.reload(); };
+  document.getElementById('out').onclick = async () => { await api('sign-out').catch(() => {}); setToken(null); location.hash = ''; location.reload(); };
   document.getElementById('theme').onchange = (e) => { try { localStorage.setItem('theme', e.target.checked ? 'dark' : 'light'); } catch {} applyTheme(); };
 }
 
@@ -391,12 +370,9 @@ async function viewAdmin() {
 
 async function admPeople() {
   await loadBase();
-  const [{ data: contacts }, { data: joinedRows }] = await Promise.all([
-    sb.from('contacts').select('instructor_id,telegram_chat_id,telegram_username'),
-    sb.from('joined').select('instructor_id'),
-  ]);
+  const { contacts, joined: joinedIds } = await api('people-extra');
   const linked = new Map((contacts || []).map((c) => [c.instructor_id, c]));
-  const joined = new Set((joinedRows || []).map((r) => r.instructor_id));
+  const joined = new Set(joinedIds || []);
   const el = document.getElementById('adm');
   const linkedCount = S.people.filter((p) => linked.get(p.id)?.telegram_chat_id).length;
   el.innerHTML = `<div class="card" id="team"><div class="spin" style="margin:6px auto"></div></div>
@@ -413,7 +389,7 @@ async function admPeople() {
         <div class="row wrap" style="gap:6px;margin-top:8px">
           <button class="btn sm" data-edit="${p.id}">Edit</button>
           ${joined.has(p.id) && p.id !== S.me.id ? `<button class="btn sm" data-reset="${p.id}">Reset PIN</button>` : ''}
-          ${(p.user_id || c?.telegram_chat_id || joined.has(p.id)) && p.id !== S.me.id ? `<button class="btn sm danger" data-rev="${p.id}">Remove access</button>` : ''}
+          ${(p.has_access || c?.telegram_chat_id || joined.has(p.id)) && p.id !== S.me.id ? `<button class="btn sm danger" data-rev="${p.id}">Remove access</button>` : ''}
         </div></div>`;
     }).join('');
     bind();
@@ -483,14 +459,13 @@ function editPerson(p) {
     };
     if (!row.name) return toast('Name is required');
     if (p?.id === S.me.id && (!row.is_admin || !row.active)) return toast("You can't remove your own admin access");
-    const { error } = p ? await sb.from('instructors').update(row).eq('id', p.id) : await sb.from('instructors').insert(row);
-    if (error) return toast(error.message.includes('duplicate') ? 'That name already exists' : error.message);
+    try { await api('person-save', { id: p?.id || null, person: row }); } catch (e) { return toast(e.message); }
     dlg.remove(); toast('Saved. Applies on the next sync.'); admPeople();
   };
 }
 
 async function admNames() {
-  const { data } = await sb.from('unmatched_names').select('*').eq('ignored', false).order('last_date', { ascending: false });
+  const { names: data } = await api('unmatched');
   const el = document.getElementById('adm');
   const opts = S.people.filter((p) => p.active).map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('');
   el.innerHTML = `<p class="small muted">Names in the sheet that don't match anyone on the roster. Those people won't get alerts until you link the name.</p>
@@ -502,17 +477,16 @@ async function admNames() {
         <button class="btn sm primary" data-new="${esc(u.word)}">New person</button>
         <button class="btn sm" data-ign="${esc(u.word)}">Not a name</button>
       </div></div>`).join('')}</div>` : '<div class="empty">All names in the current weeks are matched.</div>'}`;
-  const done = async (word) => { await sb.from('unmatched_names').update({ ignored: true }).eq('word', word); };
+  const done = async (word) => { await api('unmatched-ignore', { word }); };
   const title = (w) => w.replace(/\b\w/g, (c) => c.toUpperCase());
   el.querySelectorAll('select[data-w]').forEach((s) => s.onchange = async () => {
     const p = S.byId.get(s.value); if (!p) return;
-    const { error } = await sb.from('instructors').update({ aliases: [...new Set([...(p.aliases || []), title(s.dataset.w)])] }).eq('id', p.id);
-    if (error) return toast(error.message);
+    try { await api('person-save', { id: p.id, person: { ...p, aliases: [...new Set([...(p.aliases || []), title(s.dataset.w)])] } }); }
+    catch (e) { return toast(e.message); }
     await done(s.dataset.w); toast(`Added as another spelling of ${p.name}`); await loadBase(); admNames();
   });
   el.querySelectorAll('[data-new]').forEach((b) => b.onclick = async () => {
-    const { error } = await sb.from('instructors').insert({ name: title(b.dataset.new) });
-    if (error) return toast(error.message);
+    try { await api('person-save', { person: { name: title(b.dataset.new) } }); } catch (e) { return toast(e.message); }
     await done(b.dataset.new); toast('Added to roster'); await loadBase(); admNames();
   });
   el.querySelectorAll('[data-ign]').forEach((b) => b.onclick = async () => { await done(b.dataset.ign); admNames(); });
@@ -520,12 +494,8 @@ async function admNames() {
 
 async function admSetup() {
   const el = document.getElementById('adm');
-  const [{ data: settings }, { data: log }, info] = await Promise.all([
-    sb.from('settings').select('*'),
-    sb.from('sync_log').select('*').order('at', { ascending: false }).limit(12),
-    api('sheet-info').catch(() => ({})),
-  ]);
-  const st = Object.fromEntries((settings || []).map((s) => [s.key, s.value]));
+  const info = await api('setup-info');
+  const st = info.settings || {}, log = info.log || [];
   el.innerHTML = `
     <div class="card"><b>Google Sheet</b>
       <p class="small muted">Paste the sheet's link or ID. Share the sheet (Viewer) with: ${info.service_account ? `<code class="k">${esc(info.service_account)}</code>` : '<i>service account not set up yet</i>'}</p>
@@ -537,14 +507,14 @@ async function admSetup() {
       ${log?.length ? `<div class="list small">${log.map((l) => `<div><span class="${l.ok ? '' : 'chip bad'}">${esc(l.message)}</span> <span class="muted">· ${ago(l.at)}</span></div>`).join('')}</div>` : ''}
     </div>
     <div class="card"><div class="row between"><b>Telegram bot</b>${st.bot_username ? `<span class="chip ok">@${esc(st.bot_username)}</span>` : '<span class="chip bad">not connected</span>'}</div>
-      <p class="small muted">After the bot token is saved in Supabase, tap Connect. It points the bot at this app and sets its commands.</p>
+      <p class="small muted">After the bot token is saved in Cloudflare (Worker secret TELEGRAM_BOT_TOKEN), tap Connect. It points the bot at this app and sets its commands.</p>
       <button class="btn" id="bot">${st.bot_username ? 'Reconnect bot' : 'Connect bot'}</button>
     </div>`;
   document.getElementById('sid-save').onclick = async () => {
     const v = document.getElementById('sid').value.trim();
     const id = (v.match(/\/d\/([a-zA-Z0-9_-]{20,})/) || [])[1] || v;
-    const { error } = await sb.from('settings').update({ value: id || null }).eq('key', 'sheet_id');
-    toast(error ? error.message : 'Saved'); admSetup();
+    try { await api('sheet-save', { sheet_id: id }); toast('Saved'); } catch (e) { toast(e.message); }
+    admSetup();
   };
   document.getElementById('sync').onclick = async (e) => {
     e.target.disabled = true; e.target.textContent = 'Syncing…';
