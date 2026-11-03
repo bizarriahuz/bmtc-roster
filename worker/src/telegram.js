@@ -20,14 +20,18 @@ async function loginLink(env, instructorId) {
 }
 
 async function scheduleText(db, instructorId, from, to, title) {
-  const data = (await all(db, 'select date, company, slots, lessons from assignments where instructor_id = ? and date between ? and ? order by date',
+  const data = (await all(db, 'select date, company, slots, lessons, info from assignments where instructor_id = ? and date between ? and ? order by date',
     instructorId, from, to)).map(asAssignment);
-  if (!data.length) return `${title}\nNothing on the roster for you.`;
+  const rem = await all(db, 'select date, text from remarks where instructor_id = ? and date between ? and ?', instructorId, from, to);
+  const items = [...rem.map((r) => ({ date: r.date, line: `🌴 <b>${esc(r.text)}</b>${/\b(am|pm|mid)/i.test(r.text) ? '' : ', not on PT'}`, o: 0 })),
+    ...data.map((a) => ({ date: a.date, line: `• ${esc(a.company)}: ${esc(describe(a))}`, o: 1 }))]
+    .sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : x.o - y.o));
+  if (!items.length) return `${title}\nNothing on the roster for you.`;
   const lines = [title];
   let cur = '';
-  for (const a of data) {
-    if (a.date !== cur) { cur = a.date; if (from !== to) lines.push(`<b>${fmtDate(a.date)}</b>`); }
-    lines.push(`• ${esc(a.company)}: ${esc(describe(a))}`);
+  for (const it of items) {
+    if (it.date !== cur) { cur = it.date; if (from !== to) lines.push(`<b>${fmtDate(it.date)}</b>`); }
+    lines.push(it.line);
   }
   return lines.join('\n');
 }

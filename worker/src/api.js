@@ -155,7 +155,7 @@ async function act(req, env, db, action, body) {
 
   if (action === 'base') {
     const [p, c, s] = await db.batch([
-      db.prepare(`select i.id, i.name, i.school, i.aliases, i.is_admin, i.active,
+      db.prepare(`select i.id, i.name, i.school, i.aliases, i.is_admin, i.is_core, i.active,
         exists (select 1 from sessions s where s.instructor_id = i.id) has_access from instructors i order by i.name collate nocase`),
       db.prepare('select * from companies order by sort'),
       db.prepare("select name, value from secrets where name = 'VAPID_PUBLIC_KEY'"),
@@ -197,9 +197,16 @@ async function act(req, env, db, action, body) {
     const [as, notes, remarks] = await db.batch([
       db.prepare('select * from assignments where date = ?').bind(d),
       db.prepare('select * from day_notes where date = ?').bind(d),
-      db.prepare('select * from remarks where date = ?').bind(d),
+      // leave / MC / OIL: everyone's for the core team and admins, otherwise only your own
+      db.prepare('select * from remarks where date = ? and (? = 1 or instructor_id = ?)').bind(d, me.is_core || me.is_admin ? 1 : 0, me.id),
     ]);
     return { assignments: as.results.map(asAssignment), notes: notes.results, remarks: remarks.results };
+  }
+
+  if (action === 'leave') {
+    if (!me.is_core && !me.is_admin) fail('core team only', 403);
+    const today = sgDate(0);
+    return { remarks: await all(db, 'select date, instructor_id, text from remarks where date between ? and ? order by date, id', today, addDays(today, 13)) };
   }
 
   if (action === 'contact-get') {
@@ -259,13 +266,13 @@ async function act(req, env, db, action, body) {
     if (!name) fail('Name is required');
     const aliases = JSON.stringify([...new Set((Array.isArray(p.aliases) ? p.aliases : []).map((s) => String(s).trim()).filter(Boolean))]);
     const school = String(p.school || '').trim() || null;
-    const isAdmin = p.is_admin ? 1 : 0, active = p.active === false ? 0 : 1;
+    const isAdmin = p.is_admin ? 1 : 0, isCore = p.is_core ? 1 : 0, active = p.active === false ? 0 : 1;
     if (body.id === me.id && (!isAdmin || !active)) fail("You can't remove your own admin access");
     try {
       if (body.id) {
-        await run(db, 'update instructors set name = ?, aliases = ?, school = ?, is_admin = ?, active = ? where id = ?', name, aliases, school, isAdmin, active, String(body.id));
+        await run(db, 'update instructors set name = ?, aliases = ?, school = ?, is_admin = ?, is_core = ?, active = ? where id = ?', name, aliases, school, isAdmin, isCore, active, String(body.id));
       } else {
-        await run(db, 'insert into instructors(id, name, aliases, school, is_admin, active) values (?, ?, ?, ?, ?, ?)', crypto.randomUUID(), name, aliases, school, isAdmin, active);
+        await run(db, 'insert into instructors(id, name, aliases, school, is_admin, is_core, active) values (?, ?, ?, ?, ?, ?, ?)', crypto.randomUUID(), name, aliases, school, isAdmin, isCore, active);
       }
     } catch (e) {
       if (/UNIQUE/i.test(String(e?.message))) fail('That name already exists');

@@ -8,6 +8,7 @@ create table if not exists instructors (
   school     text,
   aliases    text not null default '[]',
   is_admin   integer not null default 0,
+  is_core    integer not null default 0,   -- core team: sees everyone's leave / remarks
   active     integer not null default 1,
   created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
@@ -82,6 +83,7 @@ create table if not exists assignments (
   slots         text,                       -- null = whole day; else JSON list of AM, MID1, MID2, PM
   lessons       text not null default '{}',
   raw           text,
+  info          text,                       -- BMTC events: time / venue
   primary key (date, company, instructor_id)
 );
 create index if not exists assignments_instructor_date on assignments(instructor_id, date);

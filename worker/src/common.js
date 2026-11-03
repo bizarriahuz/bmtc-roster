@@ -23,7 +23,7 @@ export function asAssignment(r) {
   return { ...r, slots: r.slots ? JSON.parse(r.slots) : null, lessons: r.lessons ? JSON.parse(r.lessons) : {} };
 }
 export function asInstructor(r) {
-  return r && { ...r, aliases: JSON.parse(r.aliases || '[]'), is_admin: !!r.is_admin, active: !!r.active };
+  return r && { ...r, aliases: JSON.parse(r.aliases || '[]'), is_admin: !!r.is_admin, is_core: !!r.is_core, active: !!r.active };
 }
 
 // ---------- Singapore dates (UTC+8, no DST) ----------

@@ -143,6 +143,43 @@ const ex = await call('exchange-login', { code: 'x'.repeat(30) });
 ok(!!ex.session, 'Telegram sign-in link works');
 ok((await call('exchange-login', { code: 'x'.repeat(30) })).status === 400, 'sign-in link is one use');
 
+// ---- reserves, leave remarks, BMTC events, core team ----
+await db.prepare('delete from outbox').run();
+await db.prepare("update instructors set is_core = 1 where id = 'k'").run();
+const tom = addDays(today, 1);
+function week3(startIso, rows, remarkRow) {
+  const [t, g] = week(startIso, rows); g.pop(); g.push(['Staff remarks', '', ...remarkRow]); return [t, g];
+}
+const [t3, g3] = week3(addDays(today, 14), { Alpha: [['Haziq AM', 'IPPT'], null, null] }, ['']);
+await runSync(env, { grids: { [t3]: g3 } }); // new week (summary); the syncs below are diffs
+await db.prepare('delete from outbox').run();
+const base3 = { Alpha: [['Haziq AM', 'IPPT'], null, null], Reserves: [['Keith AM'], null, null], BMTC: [['Zuhair', 'Range brief'], null, null] };
+let [, g3b] = week3(addDays(today, 14), base3, ['Wesley OIL']);
+r = await runSync(env, { grids: { [t3]: g3b } });
+let obx = await sql('select * from outbox');
+ok(obx.some((o) => o.instructor_id === 'k' && /reserve standby/.test(o.html)), 'reserve standby alert');
+ok(obx.some((o) => o.instructor_id === 'w' && /Leave \/ off update/.test(o.html) && /OIL/.test(o.html)), 'OIL remark alerts the named person only');
+ok(!obx.some((o) => o.instructor_id === 'h'), 'nobody else alerted');
+await db.prepare('delete from outbox').run();
+[, g3b] = week3(addDays(today, 14), { ...base3, Alpha: [['Haziq/Keith AM', 'IPPT'], null, null], Reserves: [[''], null, null] }, ['Wesley OIL']);
+r = await runSync(env, { grids: { [t3]: g3b } });
+obx = await sql('select * from outbox');
+ok(obx.length === 1 && obx[0].instructor_id === 'k' && /You have been activated/.test(obx[0].html) && /ACTIVATED from reserve/.test(obx[0].html), 'reserve activation alert: ' + r.message);
+const kTok = (await call('join', { code: 'TEAM123', instructor_id: 'k', pin: '1357' })).session;
+const kr = await call('my-roster', {}, kTok);
+ok(kr.changes.some((c) => c.after?.activated), 'activated change visible in history');
+const wTok2 = (await call('join', { code: 'TEAM123', instructor_id: 'w', pin: '1234' })).session;
+const d14 = addDays(today, 14);
+ok((await call('day', { date: d14 }, kTok)).remarks.length === 1, "core team sees everyone's remarks");
+await db.prepare("insert into remarks(date, instructor_id, text) values (?, 'h', 'Haziq LEAVE')").bind(d14).run();
+ok((await call('day', { date: d14 }, wTok2)).remarks.length === 1, 'non-core person sees only own remark');
+ok((await call('leave', {}, wTok2)).status === 403 && (await call('leave', {}, kTok)).remarks.length >= 2, 'leave page core-only');
+ok((await sql("select * from assignments where company='BMTC'"))[0]?.instructor_id === 'z', 'BMTC event stored for Zuhair');
+await db.prepare("insert into remarks(date, instructor_id, text) values (?, 'h', 'Haziq LEAVE')").bind(tom).run();
+await db.prepare('delete from outbox').run();
+await queueReminders(env, 'evening');
+ok((await sql("select html from outbox where instructor_id='h'"))[0]?.html.includes('not on PT'), 'evening reminder includes leave');
+
 console.log(fails ? `\n${fails} FAILED` : '\nALL PASSED');
 await dispose();
 process.exit(fails ? 1 : 0);

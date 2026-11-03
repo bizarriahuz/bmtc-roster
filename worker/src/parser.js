@@ -258,6 +258,15 @@ export function parseTab(grid, roster) {
       for (let rr = r + 1; rr < end; rr++) {
         for (const { c } of slotCols) { const t = str(G(rr, c)); if (t) dayNotes.push(t); }
       }
+      const here = assignments.filter((x) => x.date === d.date && x.company === name);
+      for (const a of here) {
+        // a plain "Mid" means whichever Mid slot actually has a lesson that day
+        if (a.slots && a.slots.includes('MID1') && a.slots.includes('MID2') && !!lessons.MID1 !== !!lessons.MID2) {
+          a.slots = a.slots.filter((s) => s !== (lessons.MID1 ? 'MID2' : 'MID1'));
+        }
+        // BMTC row = ad-hoc events: keep the time/venue lines with each person's entry
+        if (name === 'BMTC' && dayNotes.length) a.info = dayNotes.join(' · ');
+      }
       const hasAnyone = assignments.some((x) => x.date === d.date && x.company === name);
       if (!hasAnyone && Object.keys(lessons).length) dayNotes.push(...Object.entries(lessons).map(([s, t]) => `${SLOT_LABEL[s]}: ${t}`));
       if (dayNotes.length) notes.push({ date: d.date, company: name, text: dayNotes.join(' · ') });
@@ -273,11 +282,16 @@ export function assignmentSig(a) {
   const slots = a.slots ? a.slots.join(',') : 'ALL';
   const relevant = a.slots ? a.slots : SLOT_ORDER;
   const lessons = relevant.map((s) => (a.lessons[s] ? `${s}=${a.lessons[s]}` : '')).filter(Boolean).join(';');
-  return `${slots}#${lessons}`;
+  return `${slots}#${lessons}#${a.info || ''}`;
 }
 
 // Human description of what an instructor is doing in an assignment
 export function describe(a) {
+  if (a.company === 'BMTC') {
+    const what = Object.values(a.lessons || {}).filter(Boolean).join(' / ') || 'Event';
+    return `📌 ${what}${a.info ? ` (${a.info})` : ''}`;
+  }
+  if (a.company === 'Reserves') return `Reserve standby ${a.slots ? a.slots.map((s) => SLOT_LABEL[s]).join('/') : 'all day'}`;
   const relevant = a.slots || SLOT_ORDER.filter((s) => a.lessons[s]);
   const parts = relevant.map((s) => (a.lessons[s] ? `${SLOT_LABEL[s]} ${a.lessons[s]}` : SLOT_LABEL[s]));
   if (!parts.length) return a.slots ? a.slots.map((s) => SLOT_LABEL[s]).join('/') : 'full day';

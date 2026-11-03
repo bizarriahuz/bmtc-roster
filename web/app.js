@@ -21,6 +21,10 @@ function rel(iso) { return iso === sgToday() ? 'Today' : iso === sgToday(1) ? 'T
 function ago(ts) { const s = (Date.now() - new Date(ts)) / 1000; if (s < 90) return 'just now'; if (s < 3600) return `${Math.round(s / 60)} min ago`; if (s < 86400) return `${Math.round(s / 3600)} h ago`; return `${Math.round(s / 86400)} d ago`; }
 function toast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 3200); }
 function describe(a) {
+  if (!a) return '';
+  if (a.text) return a.text; // staff remark (leave / OIL / MC)
+  if (a.company === 'BMTC') return `${Object.values(a.lessons || {}).filter(Boolean).join(' / ') || 'Event'}${a.info ? ` (${a.info})` : ''}`;
+  if (a.company === 'Reserves') return `Reserve standby ${a.slots ? a.slots.map((x) => SLOT_LABEL[x]).join('/') : 'all day'}`;
   const rel = a.slots || SLOTS.filter((s) => a.lessons?.[s]);
   const parts = rel.map((s) => (a.lessons?.[s] ? `${SLOT_LABEL[s]} ${a.lessons[s]}` : SLOT_LABEL[s]));
   return parts.length ? parts.join(', ') : 'Full day';
@@ -40,6 +44,7 @@ const icon = {
   me: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6"/></svg>',
   grid: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 4v17M14 4v17"/></svg>',
   set: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>',
+  leave: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4M9 15l2 2 4-4"/></svg>',
   admin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/></svg>',
 };
 const MARK = '<svg class="mark" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#3d5a2e"/><path d="M14 22h36M14 32h36M14 42h24" stroke="#e3ead9" stroke-width="5" stroke-linecap="round"/><circle cx="46" cy="42" r="5" fill="#f0a16a"/></svg>';
@@ -160,13 +165,13 @@ async function shell(active, html) {
     <main id="view">${html}</main>
     <nav class="tabs">
       ${tab('me', 'My roster', icon.me)}${tab('grid', 'All coys', icon.grid)}
-      ${tab('settings', 'Settings', icon.set)}${S.me.is_admin ? tab('admin', 'Admin', icon.admin) : ''}
+      ${isCore() ? tab('leave', 'Leave', icon.leave) : ''}${tab('settings', 'Settings', icon.set)}${S.me.is_admin ? tab('admin', 'Admin', icon.admin) : ''}
     </nav>`;
 }
 
 function route() {
   const h = (location.hash.replace('#', '').split('&')[0]) || 'me';
-  ({ me: viewMe, grid: viewGrid, settings: viewSettings, admin: S.me.is_admin ? viewAdmin : viewMe }[h] || viewMe)();
+  ({ me: viewMe, grid: viewGrid, leave: isCore() ? viewLeave : viewMe, settings: viewSettings, admin: S.me.is_admin ? viewAdmin : viewMe }[h] || viewMe)();
   window.scrollTo(0, 0);
 }
 
@@ -186,8 +191,8 @@ function remarkCat(t) {
   const x = String(t).toLowerCase();
   if (/\bmc\b|medical|hospital|\bhl\b/.test(x)) return 'cat-mc';
   if (/\boil\b|\boff\b|in lieu/.test(x)) return 'cat-off';
-  if (/course|school|assessment|refresher|training|sfa|\btrg\b/.test(x)) return 'cat-crs';
-  if (/\bal\b|\bul\b|\bnpl\b|leave|\bloa\b|paternal|maternal|celebration|childcare/.test(x)) return 'cat-lv';
+  if (/course|school|assessment|refresher|training|sfa|\btrg\b|\bict\b|\baes\b/.test(x)) return 'cat-crs';
+  if (/\bal\b|\bul\b|\bnpl\b|\bccl\b|leave|\bloa\b|paternal|maternal|celebration|childcare/.test(x)) return 'cat-lv';
   return '';
 }
 function noteCat(t) {
@@ -206,24 +211,34 @@ function personChip(id, slots) {
 // ---------- My roster ----------
 async function viewMe() {
   await shell('me', '<div class="spin"></div>');
-  const today = sgToday();
+  const today = sgToday(), until = addDays(today, 20);
   const { mine, changes, remarks: myRemarks, others } = await api('my-roster');
   const byDate = new Map();
   for (const a of mine || []) { if (!byDate.has(a.date)) byDate.set(a.date, []); byDate.get(a.date).push(a); }
-  const remarkByDate = new Map((myRemarks || []).map((r) => [r.date, r.text]));
+  const remarkByDate = new Map();
+  for (const r of myRemarks || []) remarkByDate.set(r.date, [...(remarkByDate.get(r.date) || []), r.text]);
+  for (const d of remarkByDate.keys()) if (!byDate.has(d)) byDate.set(d, []);
 
   const dayCard = (date, list, isToday) => `
     <div class="card ${isToday ? 'today' : ''}">
       <div class="row between"><span class="big">${rel(date) ? `${rel(date)} <span class="muted small" style="font-weight:500">${fmt(date)}</span>` : fmt(date, true)}</span>
-      ${remarkByDate.get(date) ? `<span class="chip cat ${remarkCat(remarkByDate.get(date)) || 'cat-lv'}">${esc(remarkByDate.get(date))}</span>` : ''}</div>
+      </div>
+      ${(remarkByDate.get(date) || []).map((t) => `<div style="margin-top:10px"><span class="chip cat ${remarkCat(t) || 'cat-lv'}" style="font-size:14px;padding:5px 12px">🌴 ${esc(t)}${/\b(am|pm|mid)/i.test(t) ? '' : ' · not on PT'}</span></div>`).join('')}
       ${list.length ? list.map((a) => {
         const co = others.filter((o) => o.date === a.date && o.company === a.company);
+        const own = a.slots ? Object.fromEntries(Object.entries(a.lessons || {}).filter(([k]) => a.slots.includes(k))) : a.lessons;
+        const head = a.company === 'BMTC' ? '📌 Event' : a.company === 'Reserves' ? '🟡 Reserve standby' : esc(a.company);
+        const body = a.company === 'BMTC'
+          ? `<div style="margin-top:6px"><b>${esc(Object.values(a.lessons || {}).filter(Boolean).join(' / ') || 'Event')}</b>${a.info ? `<div class="small muted">${esc(a.info)}</div>` : ''}</div>`
+          : a.company === 'Reserves'
+            ? `<div class="slots">${(a.slots || SLOTS).map((x) => `<span class="slot ${x} mine"><b>${SLOT_LABEL[x]}</b>standby</span>`).join('')}</div><div class="small muted">You'll get an alert if you're activated.</div>`
+            : slotRow(own, a.slots, false);
         return `<div style="margin-top:12px">
-          <div class="coy">${esc(a.company)}</div>
-          ${slotRow(a.lessons, a.slots, true)}
+          <div class="coy">${head}</div>
+          ${body}
           ${co.length ? `<div class="row wrap" style="margin-top:8px;gap:4px"><span class="small muted">With</span>${co.map((o) => personChip(o.instructor_id, o.slots)).join('')}</div>` : ''}
         </div>`;
-      }).join('') : '<div class="note">Nothing on the roster.</div>'}
+      }).join('') : (remarkByDate.get(date) ? '' : '<div class="note">Nothing on the roster.</div>')}
     </div>`;
 
   let html = '';
@@ -231,15 +246,15 @@ async function viewMe() {
   html += dayCard(today, byDate.get(today) || [], true);
   const tom = sgToday(1);
   if (!byDate.has(tom)) html += dayCard(tom, [], false);
-  const upcoming = [...byDate.keys()].filter((d) => d !== today).sort();
+  const upcoming = [...byDate.keys()].filter((d) => d !== today && d <= until).sort();
   html += `<h2>Coming up</h2>`;
   html += upcoming.length ? upcoming.map((d) => dayCard(d, byDate.get(d), false)).join('') : '<div class="empty">No more slots in the next 3 weeks.</div>';
 
   if (changes?.length) {
-    html += `<h2>Recent changes to your schedule</h2><div class="card">${changes.map((c) => `
-      <div class="change ${c.kind}">
-        <div><b>${fmt(c.date)}</b> · ${esc(c.company)} ${c.last_minute ? '<span class="chip warn">last-minute</span>' : ''}</div>
-        <div class="small">${c.kind === 'added' ? 'Added: ' + esc(describe(c.after)) : c.kind === 'removed' ? 'Removed (was ' + esc(describe(c.before)) + ')' : esc(describe(c.before)) + ' → <b>' + esc(describe(c.after)) + '</b>'}</div>
+    html += `<h2>Recent changes to your schedule</h2><div class="card">${changes.map((c) => { if (c.after?.activated) c.kind = 'activated'; return c; }).map((c) => `
+      <div class="change ${c.kind === 'activated' ? 'removed' : c.kind}">
+        <div><b>${fmt(c.date)}</b> · ${c.company === 'Remark' ? '🌴 Leave / off' : c.company === 'BMTC' ? '📌 Event' : esc(c.company)} ${c.kind === 'activated' ? '<span class="chip bad">🚨 activated</span>' : ''} ${c.last_minute ? '<span class="chip warn">last-minute</span>' : ''}</div>
+        <div class="small">${c.kind === 'activated' ? 'From reserve → ' + esc(describe(c.after)) : c.kind === 'added' ? 'Added: ' + esc(describe(c.after)) : c.kind === 'removed' ? 'Removed (was ' + esc(describe(c.before)) + ')' : esc(describe(c.before)) + ' → <b>' + esc(describe(c.after)) + '</b>'}</div>
         <div class="small muted">${ago(c.created_at)}</div>
       </div>`).join('')}</div>`;
   }
@@ -265,7 +280,7 @@ async function viewGrid() {
     <div class="seg">${schools.map((s) => `<button data-s="${esc(s)}" class="${s === S.school ? 'on' : ''}">${esc(s)}</button>`).join('')}</div>
     <div class="legend">${SLOTS.map((x) => `<span class="slot ${x}" style="padding:2px 8px;font-size:12px"><b style="margin:0">${SLOT_LABEL[x]}</b></span>`).join('')}</div>`;
 
-  if (remarks?.length && (S.school === 'All')) {
+  if (isCore() && remarks?.length && (S.school === 'All')) {
     html += `<div class="card"><div class="small muted" style="margin-bottom:6px;font-weight:600">STAFF REMARKS</div><div class="row wrap" style="gap:4px">${remarks.map((r) => `<span class="chip cat ${remarkCat(r.text)}" ${r.instructor_id === S.me.id ? 'style="font-weight:700"' : ''}>${esc(r.text)}</span>`).join('')}</div></div>`;
   }
   let shown = 0;
@@ -276,17 +291,37 @@ async function viewGrid() {
     shown++;
     const lessons = list[0]?.lessons || {};
     const isMine = list.some((a) => a.instructor_id === S.me.id);
+    const isRes = c.name === 'Reserves', isEvt = c.name === 'BMTC';
     html += `<div class="card ${isMine ? 'today' : ''}">
-      <div class="row between"><span class="coy">${esc(c.name)}</span><span class="small muted">${esc(c.school || '')}</span></div>
-      ${list.length ? slotRow(lessons, null, false) : ''}
+      <div class="row between"><span class="coy">${isRes ? '🟡 Reserves' : isEvt ? '📌 BMTC events' : esc(c.name)}</span><span class="small muted">${isRes || isEvt ? '' : esc(c.school || '')}</span></div>
+      ${list.length && !isRes ? slotRow(lessons, null, false) : ''}
       ${list.length ? `<div class="row wrap" style="gap:4px;margin-top:8px">${list.sort((x, y) => (S.byId.get(x.instructor_id)?.name || '').localeCompare(S.byId.get(y.instructor_id)?.name || '')).map((a) => personChip(a.instructor_id, a.slots)).join('')}</div>` : ''}
-      ${note ? (noteCat(note.text) ? `<div style="margin-top:8px"><span class="chip cat ${noteCat(note.text)}">${esc(note.text)}</span></div>` : `<div class="note">${esc(note.text)}</div>`) : ''}
+      ${note ? (isRes ? `<div style="margin-top:8px"><span class="chip cat cat-mc">Short of manpower: ${esc(note.text)}</span></div>`
+        : noteCat(note.text) ? `<div style="margin-top:8px"><span class="chip cat ${noteCat(note.text)}">${esc(note.text)}</span></div>` : `<div class="note">${esc(note.text)}</div>`) : ''}
     </div>`;
   }
   if (!shown) html += '<div class="empty">Nothing scheduled for this day.</div>';
   document.getElementById('view').innerHTML = html;
   document.querySelectorAll('[data-d]').forEach((b) => b.onclick = () => { S.gridDate = b.dataset.d; viewGrid(); });
   document.querySelectorAll('[data-s]').forEach((b) => b.onclick = () => { S.school = b.dataset.s; viewGrid(); });
+}
+
+// ---------- Leave (core team) ----------
+function isCore() { return !!(S.me && (S.me.is_core || S.me.is_admin)); }
+async function viewLeave() {
+  await shell('leave', '<div class="spin"></div>');
+  const from = sgToday(), to = addDays(from, 13);
+  const { remarks: data } = await api('leave');
+  const by = new Map();
+  for (const r of data || []) { if (!by.has(r.date)) by.set(r.date, []); by.get(r.date).push(r); }
+  const legend = [['cat-mc', 'MC / HL'], ['cat-lv', 'Leave'], ['cat-off', 'Off / OIL'], ['cat-crs', 'Course / school']]
+    .map(([c, l]) => `<span class="chip cat ${c}">${l}</span>`).join('');
+  let html = `<h1>Leave &amp; remarks</h1><p class="small muted">Who's away for the next 2 weeks, from the Staff Remarks rows. Only the core team and admins see this page.</p><div class="legend" style="margin-top:8px">${legend}</div>`;
+  html += by.size ? [...by.entries()].map(([d, list]) => `<div class="card ${d === from ? 'today' : ''}">
+      <div class="row between"><span class="big">${rel(d) ? `${rel(d)} <span class="muted small" style="font-weight:500">${fmt(d)}</span>` : fmt(d, true)}</span><span class="small muted">${list.length} away</span></div>
+      <div class="row wrap" style="gap:4px;margin-top:8px">${list.sort((a, b) => (remarkCat(a.text) + a.text).localeCompare(remarkCat(b.text) + b.text)).map((r) => `<span class="chip cat ${remarkCat(r.text)}">${esc(r.text)}</span>`).join('')}</div>
+    </div>`).join('') : '<div class="empty">No leave or remarks in the next 2 weeks.</div>';
+  document.getElementById('view').innerHTML = html;
 }
 
 // ---------- Settings ----------
@@ -383,7 +418,7 @@ async function admPeople() {
     document.getElementById('plist').innerHTML = S.people.filter((p) => p.name.toLowerCase().includes(q.toLowerCase())).map((p) => {
       const c = linked.get(p.id);
       return `<div>
-        <div class="row between"><div><b>${esc(p.name)}</b> ${p.is_admin ? '<span class="chip ok">admin</span>' : ''} ${!p.active ? '<span class="chip bad">inactive</span>' : ''}
+        <div class="row between"><div><b>${esc(p.name)}</b> ${p.is_admin ? '<span class="chip ok">admin</span>' : ''}${p.is_core ? '<span class="chip">core</span>' : ''} ${!p.active ? '<span class="chip bad">inactive</span>' : ''}
           <div class="small muted">${esc(p.school || 'No school')}${p.aliases?.length ? ' · also: ' + p.aliases.map(esc).join(', ') : ''}</div></div>
           <div class="row" style="gap:4px">${joined.has(p.id) ? '<span class="chip ok">joined</span>' : '<span class="chip">not joined</span>'}${c?.telegram_chat_id ? '<span class="chip">Telegram</span>' : ''}</div></div>
         <div class="row wrap" style="gap:6px;margin-top:8px">
@@ -444,6 +479,7 @@ function editPerson(p) {
     <label class="small muted" style="display:block;margin-top:8px">Other spellings in the sheet (comma separated)</label><input type="text" id="e-a" value="${esc((p?.aliases || []).join(', '))}">
     <label class="small muted" style="display:block;margin-top:8px">School</label>
     <input type="text" id="e-s" list="schools" value="${esc(p?.school || '')}"><datalist id="schools">${schools.map((s) => `<option value="${esc(s)}">`).join('')}</datalist>
+    <label class="tog"><span>Core team (sees everyone's leave &amp; remarks)</span><input type="checkbox" id="e-core" ${p?.is_core ? 'checked' : ''}></label>
     <label class="tog"><span>Admin (can manage people and settings)</span><input type="checkbox" id="e-ad" ${p?.is_admin ? 'checked' : ''}></label>
     <label class="tog"><span>Active</span><input type="checkbox" id="e-ac" ${!p || p.active ? 'checked' : ''}></label>
     <div class="row" style="justify-content:flex-end;gap:6px;margin-top:8px"><button class="btn" id="e-x">Cancel</button><button class="btn primary" id="e-ok">Save</button></div></div>`;
@@ -455,6 +491,7 @@ function editPerson(p) {
       aliases: dlg.querySelector('#e-a').value.split(',').map((s) => s.trim()).filter(Boolean),
       school: dlg.querySelector('#e-s').value.trim() || null,
       is_admin: dlg.querySelector('#e-ad').checked,
+      is_core: dlg.querySelector('#e-core').checked,
       active: dlg.querySelector('#e-ac').checked,
     };
     if (!row.name) return toast('Name is required');
